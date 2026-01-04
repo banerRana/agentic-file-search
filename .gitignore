@@ -11,3 +11,9 @@ wheels/
 
 # caches
 *_cache/
+
+# Environment
+.env
+
+# OS files
+.DS_Store
