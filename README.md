@@ -16,6 +16,10 @@ This system uses a **three-phase strategy**:
 2. **Deep Dive** — Full extraction on relevant documents only
 3. **Backtrack** — Follow cross-references to previously skipped documents
 
+## Watch the video
+This video explains the architecture of the project and how to run it. 
+[![Watch the demo on YouTube](https://img.youtube.com/vi/rMADSuus6jg/maxresdefault.jpg)](https://www.youtube.com/watch?v=rMADSuus6jg)
+
 ## Features
 
 - 🔍 **6 Tools**: `scan_folder`, `preview_file`, `parse_file`, `read`, `grep`, `glob`
