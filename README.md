@@ -163,3 +163,7 @@ MIT
 - Original concept from [run-llama/fs-explorer](https://github.com/run-llama/fs-explorer)
 - Document parsing by [Docling](https://github.com/DS4SD/docling)
 - Powered by [Google Gemini](https://deepmind.google/technologies/gemini/)
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=PromtEngineer/agentic-file-search&type=Date)](https://star-history.com/#PromtEngineer/agentic-file-search&Date)
