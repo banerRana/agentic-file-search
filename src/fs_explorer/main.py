@@ -9,15 +9,17 @@ import json
 import asyncio
 import os
 from datetime import datetime
+from pathlib import Path
 
 from typer import Typer, Option, Argument, Context, BadParameter, Exit
-from typing import Annotated
+from typing import Annotated, Any
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from .embeddings import EmbeddingProvider
 from .index_config import resolve_db_path
 from .indexing import IndexingPipeline, SchemaDiscovery
 from .storage import DuckDBStorage
@@ -66,16 +68,33 @@ PHASE_DESCRIPTIONS = {
 }
 
 
+def _load_metadata_profile(path_value: str | None) -> dict[str, Any] | None:
+    if path_value is None:
+        return None
+    resolved = Path(path_value).expanduser().resolve()
+    if not resolved.exists() or not resolved.is_file():
+        raise BadParameter(f"Metadata profile file not found: {resolved}")
+    try:
+        payload = json.loads(resolved.read_text())
+    except json.JSONDecodeError as exc:
+        raise BadParameter(
+            f"Metadata profile file is not valid JSON: {resolved}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise BadParameter("Metadata profile JSON must be an object.")
+    return payload
+
+
 def format_tool_panel(event: ToolCallEvent, step_number: int) -> Panel:
     """Create a richly formatted panel for a tool call event."""
     tool_name = event.tool_name
     icon = TOOL_ICONS.get(tool_name, "🔧")
     phase_info = PHASE_DESCRIPTIONS.get(tool_name, ("Action", "Tool Call", "yellow"))
     phase_label, phase_desc, color = phase_info
-    
+
     # Build the content
     lines = []
-    
+
     # Tool and target info
     if "directory" in event.tool_input:
         target = event.tool_input["directory"]
@@ -83,27 +102,28 @@ def format_tool_panel(event: ToolCallEvent, step_number: int) -> Panel:
     elif "file_path" in event.tool_input:
         target = event.tool_input["file_path"]
         lines.append(f"**Target File:** `{target}`")
-    
+
     # Additional parameters
-    other_params = {k: v for k, v in event.tool_input.items() 
-                    if k not in ("directory", "file_path")}
+    other_params = {
+        k: v for k, v in event.tool_input.items() if k not in ("directory", "file_path")
+    }
     if other_params:
         lines.append(f"**Parameters:** `{json.dumps(other_params)}`")
-    
+
     lines.append("")
     lines.append("---")
     lines.append("")
-    
+
     # Reasoning (this is the key part for visibility)
     lines.append("**Agent's Reasoning:**")
     lines.append("")
     lines.append(event.reason)
-    
+
     content = "\n".join(lines)
-    
+
     # Create title with step number and phase
     title = f"{icon} Step {step_number}: {tool_name} [{phase_label}: {phase_desc}]"
-    
+
     return Panel(
         Markdown(content),
         title=title,
@@ -138,13 +158,20 @@ def print_workflow_header(console: Console, task: str, folder: str) -> None:
     header = Table.grid(padding=(0, 2))
     header.add_column(style="bold cyan", justify="right")
     header.add_column()
-    
+
     header.add_row("🤖 FsExplorer Agent", "")
     header.add_row("📋 Task:", task)
     header.add_row("📁 Folder:", folder)
     header.add_row("🕐 Started:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    
-    console.print(Panel(header, border_style="bold blue", title="Starting Exploration", title_align="left"))
+
+    console.print(
+        Panel(
+            header,
+            border_style="bold blue",
+            title="Starting Exploration",
+            title_align="left",
+        )
+    )
     console.print()
 
 
@@ -157,12 +184,12 @@ def print_workflow_summary(
 ) -> None:
     """Print a summary of the workflow execution."""
     usage = agent.token_usage
-    
+
     # Create summary table
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="bold", justify="right")
     summary.add_column()
-    
+
     summary.add_row("Total Steps:", str(step_count))
     summary.add_row("API Calls:", str(usage.api_calls))
     summary.add_row("Documents Scanned:", str(usage.documents_scanned))
@@ -172,51 +199,59 @@ def print_workflow_summary(
     summary.add_row("Completion Tokens:", f"{usage.completion_tokens:,}")
     summary.add_row("Total Tokens:", f"{usage.total_tokens:,}")
     summary.add_row("", "")
-    
+
     # Cost calculation
     input_cost, output_cost, total_cost = usage._calculate_cost()
     summary.add_row("Est. Input Cost:", f"${input_cost:.4f}")
     summary.add_row("Est. Output Cost:", f"${output_cost:.4f}")
     summary.add_row("Est. Total Cost:", f"${total_cost:.4f}")
-    
+
     console.print()
-    console.print(Panel(
-        summary,
-        title="📊 Workflow Summary",
-        title_align="left",
-        border_style="bold blue",
-    ))
+    console.print(
+        Panel(
+            summary,
+            title="📊 Workflow Summary",
+            title_align="left",
+            border_style="bold blue",
+        )
+    )
 
     if trace.step_path:
         path_markdown = "\n".join(f"- `{entry}`" for entry in trace.step_path)
         console.print()
-        console.print(Panel(
-            Markdown(path_markdown),
-            title="🧭 Exploration Path",
-            title_align="left",
-            border_style="bold cyan",
-        ))
+        console.print(
+            Panel(
+                Markdown(path_markdown),
+                title="🧭 Exploration Path",
+                title_align="left",
+                border_style="bold cyan",
+            )
+        )
 
     referenced_documents = trace.sorted_documents()
     if referenced_documents:
         docs_markdown = "\n".join(f"- `{doc}`" for doc in referenced_documents)
         console.print()
-        console.print(Panel(
-            Markdown(docs_markdown),
-            title="📚 Referenced Documents (Tool Calls)",
-            title_align="left",
-            border_style="bold green",
-        ))
+        console.print(
+            Panel(
+                Markdown(docs_markdown),
+                title="📚 Referenced Documents (Tool Calls)",
+                title_align="left",
+                border_style="bold green",
+            )
+        )
 
     if cited_sources:
         sources_markdown = "\n".join(f"- `{source}`" for source in cited_sources)
         console.print()
-        console.print(Panel(
-            Markdown(sources_markdown),
-            title="🔖 Cited Sources (Final Answer)",
-            title_align="left",
-            border_style="bold yellow",
-        ))
+        console.print(
+            Panel(
+                Markdown(sources_markdown),
+                title="🔖 Cited Sources (Final Answer)",
+                title_align="left",
+                border_style="bold yellow",
+            )
+        )
 
 
 async def run_workflow(
@@ -228,19 +263,21 @@ async def run_workflow(
 ) -> None:
     """
     Execute the exploration workflow with detailed step-by-step output.
-    
+
     Args:
         task: The user's task/question to answer.
     """
     console = Console()
     resolved_folder = os.path.abspath(folder)
     if not os.path.exists(resolved_folder) or not os.path.isdir(resolved_folder):
-        console.print(Panel(
-            Text(f"No such directory: {resolved_folder}", style="bold red"),
-            title="❌ Error",
-            title_align="left",
-            border_style="bold red",
-        ))
+        console.print(
+            Panel(
+                Text(f"No such directory: {resolved_folder}", style="bold red"),
+                title="❌ Error",
+                title_align="left",
+                border_style="bold red",
+            )
+        )
         return
 
     resolved_db_path: str | None = None
@@ -267,15 +304,15 @@ async def run_workflow(
         set_index_context(resolved_folder, resolved_db_path)
     else:
         clear_index_context()
-    
+
     try:
         # Reset agent for fresh state
         reset_agent()
-        
+
         # Print header
         print_workflow_header(console, task, resolved_folder)
         trace = ExplorationTrace(root_directory=resolved_folder)
-        
+
         step_number = 0
         handler = workflow.run(
             start_event=InputEvent(
@@ -284,7 +321,7 @@ async def run_workflow(
                 use_index=use_index,
             )
         )
-        
+
         with console.status(status="[bold cyan]🔄 Analyzing task...") as status:
             async for event in handler.stream_events():
                 if isinstance(event, ToolCallEvent):
@@ -311,9 +348,13 @@ async def run_workflow(
                     # Update status based on tool
                     icon = TOOL_ICONS.get(event.tool_name, "🔧")
                     if event.tool_name == "scan_folder":
-                        status.update(f"[bold cyan]{icon} Scanning documents in parallel...")
+                        status.update(
+                            f"[bold cyan]{icon} Scanning documents in parallel..."
+                        )
                     elif event.tool_name == "parse_file":
-                        status.update(f"[bold green]{icon} Reading document in detail...")
+                        status.update(
+                            f"[bold green]{icon} Reading document in detail..."
+                        )
                     elif event.tool_name == "preview_file":
                         status.update(f"[bold cyan]{icon} Quick preview of document...")
                     elif event.tool_name == "semantic_search":
@@ -323,7 +364,9 @@ async def run_workflow(
                     elif event.tool_name == "list_indexed_documents":
                         status.update(f"[bold blue]{icon} Listing indexed documents...")
                     else:
-                        status.update(f"[bold yellow]{icon} Executing {event.tool_name}...")
+                        status.update(
+                            f"[bold yellow]{icon} Executing {event.tool_name}..."
+                        )
 
                     # Print the detailed panel
                     panel = format_tool_panel(event, step_number)
@@ -333,41 +376,45 @@ async def run_workflow(
                     status.update("[bold cyan]🔄 Processing results...")
                 elif isinstance(event, GoDeeperEvent):
                     step_number += 1
-                    trace.record_go_deeper(step_number=step_number, directory=event.directory)
+                    trace.record_go_deeper(
+                        step_number=step_number, directory=event.directory
+                    )
                     panel = format_navigation_panel(event, step_number)
                     console.print(panel)
                     console.print()
                     status.update("[bold cyan]🔄 Exploring directory...")
-                    
+
                 elif isinstance(event, AskHumanEvent):
                     status.stop()
                     console.print()
-                    
+
                     # Create a nice prompt panel
                     question_panel = Panel(
-                        Markdown(f"**Question:** {event.question}\n\n**Why I'm asking:** {event.reason}"),
+                        Markdown(
+                            f"**Question:** {event.question}\n\n**Why I'm asking:** {event.reason}"
+                        ),
                         title="❓ Human Input Required",
                         title_align="left",
                         border_style="bold red",
                     )
                     console.print(question_panel)
-                    
+
                     answer = console.input("[bold cyan]Your answer:[/] ")
                     while answer.strip() == "":
                         console.print("[bold red]Please provide an answer.[/]")
                         answer = console.input("[bold cyan]Your answer:[/] ")
-                    
+
                     handler.ctx.send_event(HumanAnswerEvent(response=answer.strip()))
                     console.print()
                     status.start()
                     status.update("[bold cyan]🔄 Processing your response...")
-            
+
             # Get final result
             result = await handler
             status.update("[bold green]✨ Preparing final answer...")
             await asyncio.sleep(0.1)
             status.stop()
-        
+
         # Print final result with prominent styling
         console.print()
         if result.final_result:
@@ -387,7 +434,7 @@ async def run_workflow(
                 border_style="bold red",
             )
             console.print(error_panel)
-        
+
         # Print workflow summary
         agent = get_agent()
         cited_sources = extract_cited_sources(result.final_result)
@@ -429,7 +476,7 @@ def main(
 ) -> None:
     """
     Explore documents with an agent, build indexes, and manage schema metadata.
-    
+
     Backward-compatible mode:
     - `explore --task "..." [--folder ...]`
     """
@@ -439,7 +486,24 @@ def main(
     if task is None or not task.strip():
         raise BadParameter("`--task` is required unless you run a subcommand.")
 
-    asyncio.run(run_workflow(task, folder, use_index=use_index, db_path=db_path))
+    effective_use_index = use_index
+    if (
+        not effective_use_index
+        and os.getenv("FS_EXPLORER_AUTO_INDEX", "").strip() == "1"
+    ):
+        try:
+            resolved_folder = os.path.abspath(folder)
+            resolved_db = resolve_db_path(db_path)
+            storage = DuckDBStorage(resolved_db, read_only=True, initialize=False)
+            if storage.get_corpus_id(resolved_folder) is not None:
+                effective_use_index = True
+            storage.close()
+        except Exception:
+            pass
+
+    asyncio.run(
+        run_workflow(task, folder, use_index=effective_use_index, db_path=db_path)
+    )
 
 
 @app.command("index")
@@ -473,20 +537,56 @@ def index_command(
             ),
         ),
     ] = False,
+    metadata_profile_path: Annotated[
+        str | None,
+        Option(
+            "--metadata-profile",
+            help=(
+                "Path to JSON profile defining dynamic langextract metadata fields "
+                "and prompt. Implies --with-metadata."
+            ),
+        ),
+    ] = None,
+    with_embeddings: Annotated[
+        bool,
+        Option(
+            "--with-embeddings",
+            help="Generate vector embeddings for indexed chunks (requires GOOGLE_API_KEY).",
+        ),
+    ] = False,
 ) -> None:
     """Build or refresh an index for a folder."""
     console = Console()
     resolved_db_path = resolve_db_path(db_path)
     storage = DuckDBStorage(resolved_db_path)
-    pipeline = IndexingPipeline(storage=storage)
+
+    embedding_provider: EmbeddingProvider | None = None
+    if with_embeddings:
+        try:
+            embedding_provider = EmbeddingProvider()
+        except ValueError as exc:
+            raise BadParameter(str(exc)) from exc
+
+    pipeline = IndexingPipeline(
+        storage=storage,
+        embedding_provider=embedding_provider,
+    )
+    metadata_profile = _load_metadata_profile(metadata_profile_path)
+    effective_with_metadata = with_metadata or metadata_profile is not None
+
+    if effective_with_metadata and metadata_profile is None:
+        console.print(
+            "[bold cyan]🔍 Analyzing corpus to generate metadata profile...[/]"
+        )
 
     try:
-        effective_discover_schema = discover_schema or with_metadata
+        effective_discover_schema = discover_schema or effective_with_metadata
         result = pipeline.index_folder(
             folder,
             discover_schema=effective_discover_schema,
             schema_name=schema_name,
-            with_metadata=with_metadata,
+            with_metadata=effective_with_metadata,
+            metadata_profile=metadata_profile,
         )
     except ValueError as exc:
         raise BadParameter(str(exc)) from exc
@@ -501,8 +601,19 @@ def index_command(
     summary.add_row("Deleted Files:", str(result.deleted_files))
     summary.add_row("Chunks Written:", str(result.chunks_written))
     summary.add_row("Active Documents:", str(result.active_documents))
+    summary.add_row("Embeddings Written:", str(result.embeddings_written))
     summary.add_row("Schema Used:", result.schema_used or "<none>")
-    summary.add_row("Metadata Mode:", "langextract" if with_metadata else "heuristic")
+    summary.add_row(
+        "Metadata Mode:",
+        "langextract" if effective_with_metadata else "heuristic",
+    )
+    if metadata_profile_path:
+        profile_label = str(Path(metadata_profile_path).expanduser().resolve())
+    elif effective_with_metadata:
+        profile_label = "<auto-discovered>"
+    else:
+        profile_label = "<none>"
+    summary.add_row("Metadata Profile:", profile_label)
 
     console.print(Panel(summary, title="📦 Index Complete", border_style="bold green"))
 
@@ -562,6 +673,16 @@ def schema_discover_command(
             help="Include langextract metadata fields in discovered schema.",
         ),
     ] = False,
+    metadata_profile_path: Annotated[
+        str | None,
+        Option(
+            "--metadata-profile",
+            help=(
+                "Path to JSON profile defining dynamic langextract metadata fields "
+                "and prompt. Implies --with-metadata."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Auto-discover and store a metadata schema for a folder."""
     console = Console()
@@ -572,13 +693,23 @@ def schema_discover_command(
     resolved_db_path = resolve_db_path(db_path)
     storage = DuckDBStorage(resolved_db_path)
     corpus_id = storage.get_or_create_corpus(resolved_folder)
+    metadata_profile = _load_metadata_profile(metadata_profile_path)
+    effective_with_metadata = with_metadata or metadata_profile is not None
+
+    if effective_with_metadata and metadata_profile is None:
+        console.print(
+            "[bold cyan]🔍 Analyzing corpus to generate metadata profile...[/]"
+        )
 
     discovery = SchemaDiscovery()
     discovered = discovery.discover_from_folder(
         resolved_folder,
-        with_langextract=with_metadata,
+        with_langextract=effective_with_metadata,
+        metadata_profile=metadata_profile,
     )
-    schema_name = name or str(discovered.get("name", f"auto_{os.path.basename(resolved_folder)}"))
+    schema_name = name or str(
+        discovered.get("name", f"auto_{os.path.basename(resolved_folder)}")
+    )
     discovered["name"] = schema_name
     schema_id = storage.save_schema(
         corpus_id=corpus_id,
@@ -596,6 +727,16 @@ def schema_discover_command(
     output.add_row("Schema Name:", schema_name)
     output.add_row("Active:", str(activate))
     output.add_row("Field Count:", str(len(discovered.get("fields", []))))
+    output.add_row(
+        "Metadata Mode:", "langextract" if effective_with_metadata else "heuristic"
+    )
+    if metadata_profile_path:
+        profile_label = str(Path(metadata_profile_path).expanduser().resolve())
+    elif effective_with_metadata:
+        profile_label = "<auto-discovered>"
+    else:
+        profile_label = "<none>"
+    output.add_row("Metadata Profile:", profile_label)
 
     console.print(Panel(output, title="🧩 Schema Saved", border_style="bold cyan"))
     console.print_json(json.dumps(discovered, indent=2))

@@ -8,7 +8,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .metadata import infer_document_type, langextract_schema_fields
+from .metadata import (
+    auto_discover_profile,
+    infer_document_type,
+    langextract_schema_fields,
+    normalize_langextract_profile,
+)
 from ..fs import SUPPORTED_EXTENSIONS
 
 
@@ -32,6 +37,7 @@ class SchemaDiscovery:
         folder: str,
         *,
         with_langextract: bool = False,
+        metadata_profile: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         files = _iter_supported_files(folder)
         document_types = sorted({infer_document_type(path) for path in files})
@@ -88,11 +94,16 @@ class SchemaDiscovery:
                 "description": "Whether text appears to contain date patterns.",
             },
         ]
-        if with_langextract:
-            fields.extend(langextract_schema_fields())
-
-        return {
+        schema: dict[str, Any] = {
             "name": f"auto_{corpus_name}",
             "description": "Auto-discovered schema for document-level metadata filtering.",
             "fields": fields,
         }
+        if with_langextract:
+            if metadata_profile is None:
+                effective_profile = auto_discover_profile(folder)
+            else:
+                effective_profile = normalize_langextract_profile(metadata_profile)
+            fields.extend(langextract_schema_fields(effective_profile))
+            schema["metadata_profile"] = effective_profile
+        return schema

@@ -16,7 +16,7 @@ class RankedDocument:
     absolute_path: str
     position: int | None
     text: str
-    semantic_score: int
+    semantic_score: float
     metadata_score: int
 
     @property
@@ -34,7 +34,9 @@ class RankedDocument:
         return "metadata"
 
 
-def rank_documents(documents: list[RankedDocument], *, limit: int) -> list[RankedDocument]:
+def rank_documents(
+    documents: list[RankedDocument], *, limit: int
+) -> list[RankedDocument]:
     """Sort merged retrieval results and apply limit."""
     ordered = sorted(
         documents,

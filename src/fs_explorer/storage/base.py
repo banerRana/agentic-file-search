@@ -18,6 +18,7 @@ class ChunkRecord:
     position: int
     start_char: int
     end_char: int
+    embedding: list[float] | None = None
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,9 @@ class StorageBackend(Protocol):
     def get_corpus_id(self, root_path: str) -> str | None:
         """Return corpus id for a root path if present."""
 
-    def upsert_document(self, document: DocumentRecord, chunks: list[ChunkRecord]) -> None:
+    def upsert_document(
+        self, document: DocumentRecord, chunks: list[ChunkRecord]
+    ) -> None:
         """Insert or update a document and replace its chunks."""
 
     def mark_deleted_missing_documents(
@@ -120,3 +123,32 @@ class StorageBackend(Protocol):
 
     def get_active_schema(self, *, corpus_id: str) -> SchemaRecord | None:
         """Fetch active schema for a corpus if present."""
+
+    def store_chunk_embeddings(
+        self,
+        *,
+        corpus_id: str,
+        chunk_embeddings: list[tuple[str, list[float]]],
+    ) -> int:
+        """Bulk-store (chunk_id, embedding) pairs. Return count written."""
+
+    def search_chunks_semantic(
+        self,
+        *,
+        corpus_id: str,
+        query_embedding: list[float],
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Search chunks by cosine similarity against a query embedding."""
+
+    def get_metadata_field_values(
+        self,
+        *,
+        corpus_id: str,
+        field_names: list[str],
+        max_distinct: int = 10,
+    ) -> dict[str, list[str]]:
+        """Return up to *max_distinct* distinct non-empty values per metadata field."""
+
+    def has_embeddings(self, *, corpus_id: str) -> bool:
+        """Return True if the corpus has stored embeddings."""

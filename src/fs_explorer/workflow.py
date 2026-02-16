@@ -6,6 +6,7 @@ exploration of the filesystem, handling tool calls, directory navigation,
 and human interaction.
 """
 
+import contextvars
 import os
 
 from workflows import Workflow, Context, step
@@ -24,51 +25,57 @@ from .agent import FsExplorerAgent
 from .models import GoDeeperAction, ToolCallAction, StopAction, AskHumanAction, Action
 from .fs import describe_dir_content
 
-# Lazy agent initialization - created on first access
-_AGENT: FsExplorerAgent | None = None
+# Per-asyncio-task agent storage — each WebSocket connection gets its own.
+_AGENT_VAR: contextvars.ContextVar[FsExplorerAgent | None] = contextvars.ContextVar(
+    "_AGENT_VAR", default=None
+)
 
 
 def get_agent() -> FsExplorerAgent:
-    """Get or create the singleton agent instance."""
-    global _AGENT
-    if _AGENT is None:
-        _AGENT = FsExplorerAgent()
-    return _AGENT
+    """Get or create the agent instance for the current context."""
+    agent = _AGENT_VAR.get()
+    if agent is None:
+        agent = FsExplorerAgent()
+        _AGENT_VAR.set(agent)
+    return agent
 
 
 def reset_agent() -> None:
-    """Reset the agent instance (useful for testing)."""
-    global _AGENT
-    _AGENT = None
+    """Reset the agent instance for the current context."""
+    _AGENT_VAR.set(None)
 
 
 class WorkflowState(BaseModel):
     """State maintained throughout the workflow execution."""
-    
+
     initial_task: str = ""
     root_directory: str = "."
     current_directory: str = "."
     use_index: bool = False
+    enable_semantic: bool = False
+    enable_metadata: bool = False
 
 
 class InputEvent(StartEvent):
     """Initial event containing the user's task."""
-    
+
     task: str
     folder: str = "."
     use_index: bool = False
+    enable_semantic: bool = False
+    enable_metadata: bool = False
 
 
 class GoDeeperEvent(Event):
     """Event triggered when navigating into a subdirectory."""
-    
+
     directory: str
     reason: str
 
 
 class ToolCallEvent(Event):
     """Event triggered when executing a tool."""
-    
+
     tool_name: str
     tool_input: dict[str, Any]
     reason: str
@@ -76,20 +83,20 @@ class ToolCallEvent(Event):
 
 class AskHumanEvent(InputRequiredEvent):
     """Event triggered when human input is required."""
-    
+
     question: str
     reason: str
 
 
 class HumanAnswerEvent(HumanResponseEvent):
     """Event containing the human's response."""
-    
+
     response: str
 
 
 class ExplorationEndEvent(StopEvent):
     """Event signaling the end of exploration."""
-    
+
     final_result: str | None = None
     error: str | None = None
 
@@ -105,15 +112,15 @@ def _handle_action_result(
 ) -> WorkflowEvent:
     """
     Convert an action result into the appropriate workflow event.
-    
+
     This helper extracts the common logic for handling agent action results,
     reducing code duplication across workflow steps.
-    
+
     Args:
         action: The action returned by the agent
         action_type: The type of action ("godeeper", "toolcall", "askhuman", "stop")
         ctx: The workflow context for state updates and event streaming
-    
+
     Returns:
         The appropriate workflow event based on the action type
     """
@@ -122,7 +129,7 @@ def _handle_action_result(
         event = GoDeeperEvent(directory=godeeper.directory, reason=action.reason)
         ctx.write_event_to_stream(event)
         return event
-    
+
     elif action_type == "toolcall":
         toolcall = cast(ToolCallAction, action.action)
         event = ToolCallEvent(
@@ -132,12 +139,12 @@ def _handle_action_result(
         )
         ctx.write_event_to_stream(event)
         return event
-    
+
     elif action_type == "askhuman":
         askhuman = cast(AskHumanAction, action.action)
         # InputRequiredEvent is written to the stream by default
         return AskHumanEvent(question=askhuman.question, reason=action.reason)
-    
+
     else:  # stop
         stopaction = cast(StopAction, action.action)
         return ExplorationEndEvent(final_result=stopaction.final_result)
@@ -150,42 +157,42 @@ async def _process_agent_action(
 ) -> WorkflowEvent:
     """
     Process the agent's next action and return the appropriate event.
-    
+
     Args:
         agent: The agent instance
         ctx: The workflow context
         update_directory: Whether to update the current directory on godeeper action
-    
+
     Returns:
         The appropriate workflow event
     """
     result = await agent.take_action()
-    
+
     if result is None:
         return ExplorationEndEvent(error="Could not produce action to take")
-    
+
     action, action_type = result
-    
+
     # Update directory state if needed for godeeper actions
     if update_directory and action_type == "godeeper":
         godeeper = cast(GoDeeperAction, action.action)
         async with ctx.store.edit_state() as state:
             state.current_directory = godeeper.directory
-    
+
     return _handle_action_result(action, action_type, ctx)
 
 
 class FsExplorerWorkflow(Workflow):
     """
     Event-driven workflow for filesystem exploration.
-    
+
     Coordinates the agent's actions through a series of steps:
     - start_exploration: Initial task processing
     - go_deeper_action: Directory navigation
     - tool_call_action: Tool execution
     - receive_human_answer: Human interaction handling
     """
-    
+
     @step
     async def start_exploration(
         self,
@@ -203,21 +210,34 @@ class FsExplorerWorkflow(Workflow):
             state.root_directory = root_directory
             state.current_directory = root_directory
             state.use_index = ev.use_index
-        
+            state.enable_semantic = ev.enable_semantic
+            state.enable_metadata = ev.enable_metadata
+
         dirdescription = describe_dir_content(root_directory)
-        index_hint = (
-            "An index is available for this folder. Start with `semantic_search` "
-            "before filesystem-wide scans."
-            if ev.use_index
-            else "Prefer absolute paths from the directory listing when calling tools."
-        )
+        if ev.enable_semantic and ev.enable_metadata:
+            index_hint = (
+                "An index is available. Start with `semantic_search` (with optional "
+                "filters) for fast retrieval, then use filesystem tools for deep dives."
+            )
+        elif ev.enable_semantic:
+            index_hint = (
+                "An index is available. Use `semantic_search` (no filters) for "
+                "similarity search, then use filesystem tools for details."
+            )
+        elif ev.enable_metadata:
+            index_hint = (
+                "An index is available. Use `semantic_search` with metadata "
+                "filters, then use filesystem tools for details."
+            )
+        else:
+            index_hint = "Prefer absolute paths from the directory listing when calling tools."
         agent.configure_task(
             f"Given that the current directory ('{root_directory}') looks like this:\n\n"
             f"```text\n{dirdescription}\n```\n\n"
             f"And that the user is giving you this task: '{ev.task}', "
             f"what action should you take first? {index_hint}"
         )
-        
+
         return await _process_agent_action(agent, ctx, update_directory=True)
 
     @step
@@ -230,14 +250,14 @@ class FsExplorerWorkflow(Workflow):
         """Handle navigation into a subdirectory."""
         state = await ctx.store.get_state()
         dirdescription = describe_dir_content(state.current_directory)
-        
+
         agent.configure_task(
             f"Given that the current directory ('{state.current_directory}') "
             f"looks like this:\n\n```text\n{dirdescription}\n```\n\n"
             f"And that the user is giving you this task: '{state.initial_task}', "
             f"what action should you take next?"
         )
-        
+
         return await _process_agent_action(agent, ctx, update_directory=True)
 
     @step
@@ -249,13 +269,13 @@ class FsExplorerWorkflow(Workflow):
     ) -> WorkflowEvent:
         """Process the human's response to a question."""
         state = await ctx.store.get_state()
-        
+
         agent.configure_task(
             f"Human response to your question: {ev.response}\n\n"
             f"Based on it, proceed with your exploration based on the "
             f"original task: {state.initial_task}"
         )
-        
+
         return await _process_agent_action(agent, ctx, update_directory=True)
 
     @step
@@ -270,7 +290,7 @@ class FsExplorerWorkflow(Workflow):
             "Given the result from the tool call you just performed, "
             "what action should you take next?"
         )
-        
+
         return await _process_agent_action(agent, ctx, update_directory=True)
 
 

@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ..embeddings import EmbeddingProvider
 from ..storage import DuckDBStorage, StorageBackend
 from .filters import MetadataFilter, parse_metadata_filters
 from .ranker import RankedDocument, rank_documents
@@ -22,7 +23,7 @@ class SearchHit:
     absolute_path: str
     position: int | None
     text: str
-    semantic_score: int
+    semantic_score: float
     metadata_score: int
     score: float
     matched_by: str
@@ -31,8 +32,13 @@ class SearchHit:
 class IndexedQueryEngine:
     """Parallel retrieval engine for semantic + metadata query paths."""
 
-    def __init__(self, storage: StorageBackend) -> None:
+    def __init__(
+        self,
+        storage: StorageBackend,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
         self.storage = storage
+        self.embedding_provider = embedding_provider
 
     def search(
         self,
@@ -41,15 +47,20 @@ class IndexedQueryEngine:
         query: str,
         filters: str | None = None,
         limit: int = 5,
+        enable_semantic: bool = True,
+        enable_metadata: bool = True,
     ) -> list[SearchHit]:
         normalized_limit = max(limit, 1)
         parsed_filters = self._parse_filters(corpus_id=corpus_id, filters=filters)
         semantic_limit = max(normalized_limit * 4, normalized_limit)
         metadata_limit = max(normalized_limit * 4, normalized_limit)
 
+        run_semantic = enable_semantic
+        run_metadata = enable_metadata and bool(parsed_filters)
+
         semantic_rows: list[dict[str, Any]]
         metadata_rows: list[dict[str, Any]]
-        if parsed_filters:
+        if run_semantic and run_metadata:
             semantic_rows, metadata_rows = self._search_parallel(
                 corpus_id=corpus_id,
                 query=query,
@@ -57,13 +68,22 @@ class IndexedQueryEngine:
                 semantic_limit=semantic_limit,
                 metadata_limit=metadata_limit,
             )
-        else:
-            semantic_rows = self.storage.search_chunks(
+        elif run_semantic:
+            semantic_rows = self._semantic_query(
                 corpus_id=corpus_id,
                 query=query,
                 limit=semantic_limit,
             )
             metadata_rows = []
+        elif run_metadata:
+            semantic_rows = []
+            metadata_rows = self._metadata_query(
+                corpus_id=corpus_id,
+                metadata_filters=parsed_filters,
+                limit=metadata_limit,
+            )
+        else:
+            semantic_rows, metadata_rows = [], []
 
         ranked = self._merge_and_rank(
             semantic_rows=semantic_rows,
@@ -85,7 +105,9 @@ class IndexedQueryEngine:
             for doc in ranked
         ]
 
-    def _parse_filters(self, *, corpus_id: str, filters: str | None) -> list[MetadataFilter]:
+    def _parse_filters(
+        self, *, corpus_id: str, filters: str | None
+    ) -> list[MetadataFilter]:
         if filters is None or not filters.strip():
             return []
         allowed_fields = self._allowed_filter_fields(corpus_id=corpus_id)
@@ -141,7 +163,18 @@ class IndexedQueryEngine:
     ) -> list[dict[str, Any]]:
         scoped_storage, cleanup = self._acquire_query_storage()
         try:
-            return scoped_storage.search_chunks(corpus_id=corpus_id, query=query, limit=limit)
+            if self.embedding_provider is not None and scoped_storage.has_embeddings(
+                corpus_id=corpus_id
+            ):
+                query_embedding = self.embedding_provider.embed_query(query)
+                return scoped_storage.search_chunks_semantic(
+                    corpus_id=corpus_id,
+                    query_embedding=query_embedding,
+                    limit=limit,
+                )
+            return scoped_storage.search_chunks(
+                corpus_id=corpus_id, query=query, limit=limit
+            )
         finally:
             cleanup()
 
@@ -168,6 +201,7 @@ class IndexedQueryEngine:
                 self.storage.db_path,
                 read_only=self.storage.read_only,
                 initialize=False,
+                embedding_dim=self.storage.embedding_dim,
             )
             return clone, clone.close
         return self.storage, lambda: None
@@ -183,7 +217,7 @@ class IndexedQueryEngine:
 
         for row in semantic_rows:
             doc_id = str(row["doc_id"])
-            score = int(row["score"])
+            score = float(row["score"])
             position = int(row["position"])
             entry = merged.setdefault(
                 doc_id,
@@ -193,11 +227,11 @@ class IndexedQueryEngine:
                     "absolute_path": str(row["absolute_path"]),
                     "position": position,
                     "text": str(row["text"]),
-                    "semantic_score": 0,
+                    "semantic_score": 0.0,
                     "metadata_score": 0,
                 },
             )
-            if score > int(entry["semantic_score"]):
+            if score > float(entry["semantic_score"]):
                 entry["semantic_score"] = score
                 entry["position"] = position
                 entry["text"] = str(row["text"])
@@ -212,7 +246,7 @@ class IndexedQueryEngine:
                     "absolute_path": str(row["absolute_path"]),
                     "position": None,
                     "text": str(row.get("preview_text", "")),
-                    "semantic_score": 0,
+                    "semantic_score": 0.0,
                     "metadata_score": 0,
                 },
             )
@@ -228,9 +262,11 @@ class IndexedQueryEngine:
                 doc_id=str(entry["doc_id"]),
                 relative_path=str(entry["relative_path"]),
                 absolute_path=str(entry["absolute_path"]),
-                position=int(entry["position"]) if entry["position"] is not None else None,
+                position=int(entry["position"])
+                if entry["position"] is not None
+                else None,
                 text=str(entry["text"]),
-                semantic_score=int(entry["semantic_score"]),
+                semantic_score=float(entry["semantic_score"]),
                 metadata_score=int(entry["metadata_score"]),
             )
             for entry in merged.values()

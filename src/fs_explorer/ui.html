@@ -209,6 +209,263 @@
             cursor: not-allowed;
         }
 
+        /* Index Badge */
+        .index-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+
+        .index-badge:hover {
+            border-color: var(--ink);
+        }
+
+        .badge-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--ink-muted);
+        }
+
+        .badge-dot.indexed {
+            background: var(--success);
+        }
+
+        /* Search Mode Toggles */
+        .search-mode-section {
+            margin-top: 14px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .search-mode-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--ink-muted);
+            white-space: nowrap;
+        }
+
+        .search-mode-options {
+            display: flex;
+            gap: 0;
+            border: 1px solid var(--border);
+        }
+
+        .search-mode-options label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 7px 14px;
+            font-size: 12px;
+            color: var(--ink-light);
+            cursor: pointer;
+            border-right: 1px solid var(--border);
+            transition: all 0.15s;
+            user-select: none;
+        }
+
+        .search-mode-options label:last-child {
+            border-right: none;
+        }
+
+        .search-mode-options label:has(input:checked) {
+            background: var(--ink);
+            color: var(--bg);
+        }
+
+        .search-mode-options label.disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
+        .search-mode-options label.disabled input {
+            pointer-events: none;
+        }
+
+        .search-mode-options input[type="checkbox"] {
+            display: none;
+        }
+
+        /* Indexing Modal */
+        .indexing-modal {
+            max-width: 620px;
+        }
+
+        .indexing-modal .modal-section {
+            margin-bottom: 20px;
+        }
+
+        .indexing-modal .schema-editor textarea {
+            width: 100%;
+            border: 1px solid var(--border);
+            background: var(--bg-alt);
+            color: var(--ink);
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 12px;
+            padding: 12px;
+            resize: vertical;
+            min-height: 160px;
+        }
+
+        .indexing-modal .schema-editor textarea:focus {
+            outline: none;
+            border-color: var(--ink-light);
+        }
+
+        .indexing-summary {
+            font-size: 13px;
+        }
+
+        .indexing-summary dl {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 6px 16px;
+        }
+
+        .indexing-summary dt {
+            color: var(--ink-muted);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .indexing-summary dd {
+            font-weight: 600;
+        }
+
+        .panel-btn {
+            background: transparent;
+            border: 1px solid var(--ink);
+            padding: 7px 16px;
+            font-family: inherit;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .panel-btn:hover {
+            background: var(--ink);
+            color: var(--bg);
+        }
+
+        .panel-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .panel-btn.primary {
+            background: var(--ink);
+            color: var(--bg);
+        }
+
+        .panel-btn.primary:hover {
+            background: var(--accent);
+            border-color: var(--accent);
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        .modal-actions .modal-btn {
+            flex: 1;
+        }
+
+        .embed-toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: var(--ink-light);
+            margin-top: 14px;
+        }
+
+        .embed-toggle-row input[type="checkbox"] {
+            accent-color: var(--accent);
+        }
+
+        .profile-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--ink-muted);
+            margin-bottom: 8px;
+        }
+
+        .profile-input {
+            width: 100%;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--ink);
+            font-family: inherit;
+            font-size: 12px;
+            padding: 10px 12px;
+            resize: vertical;
+            min-height: 64px;
+            margin-bottom: 12px;
+        }
+
+        .profile-input:focus {
+            outline: none;
+            border-color: var(--ink-light);
+        }
+
+        .radio-group {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 12px;
+        }
+
+        .radio-group label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--ink-light);
+            cursor: pointer;
+        }
+
+        .radio-group input[type="radio"] {
+            accent-color: var(--accent);
+        }
+
+        .panel-spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .index-panel-message {
+            font-size: 12px;
+            color: var(--ink-muted);
+            font-style: italic;
+            margin-top: 10px;
+        }
+
         /* Main Grid */
         .main-grid {
             display: grid;
@@ -692,6 +949,10 @@
             <div class="folder-row">
                 <div class="folder-display" id="folderDisplay">
                     <span class="folder-path" id="currentPath">.</span>
+                    <span class="index-badge" id="indexBadge" onclick="openIndexingModal()" style="display:none;">
+                        <span class="badge-dot" id="badgeDot"></span>
+                        <span id="badgeText">Not Indexed</span>
+                    </span>
                     <button class="folder-btn" onclick="openFolderPicker()">Browse</button>
                 </div>
             </div>
@@ -701,9 +962,9 @@
         <section class="query-section">
             <div class="query-label">Query</div>
             <div class="query-row">
-                <input 
-                    type="text" 
-                    class="query-input" 
+                <input
+                    type="text"
+                    class="query-input"
                     id="queryInput"
                     placeholder="What would you like to know about your documents?"
                     autocomplete="off"
@@ -711,6 +972,14 @@
                 <button class="query-btn" id="queryBtn" onclick="startExploration()">
                     Execute
                 </button>
+            </div>
+            <div class="search-mode-section" id="searchModeSection">
+                <div class="search-mode-label">Retrieval</div>
+                <div class="search-mode-options">
+                    <label><input type="checkbox" value="agentic" checked disabled><span>Agentic</span></label>
+                    <label class="disabled" id="smSemantic"><input type="checkbox" id="cbSemantic" value="semantic" disabled><span>Semantic</span></label>
+                    <label class="disabled" id="smMetadata"><input type="checkbox" id="cbMetadata" value="metadata" disabled><span>Metadata</span></label>
+                </div>
             </div>
         </section>
 
@@ -813,6 +1082,13 @@
         </div>
     </div>
 
+    <!-- Indexing Config Modal -->
+    <div class="modal-overlay" id="indexingModal">
+        <div class="modal indexing-modal">
+            <div id="indexingModalContent"></div>
+        </div>
+    </div>
+
     <script>
         // State
         let ws = null;
@@ -820,6 +1096,7 @@
         let isRunning = false;
         let currentFolder = '.';
         let browsingPath = '.';
+        let indexStatus = null;
 
         // Tool styles
         const toolStyles = {
@@ -847,43 +1124,298 @@
         const folderModalPath = document.getElementById('folderModalPath');
         const folderUpBtn = document.getElementById('folderUpBtn');
         const currentPathEl = document.getElementById('currentPath');
+        const indexingModal = document.getElementById('indexingModal');
+        const indexingModalContent = document.getElementById('indexingModalContent');
 
         // Enter key
         queryInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !isRunning) startExploration();
         });
 
-        // Start
-        function startExploration() {
+        // ========== Index Badge + Status ==========
+
+        async function checkIndexStatus(folder) {
+            try {
+                const res = await fetch(`/api/index/status?folder=${encodeURIComponent(folder)}`);
+                indexStatus = await res.json();
+            } catch (e) {
+                indexStatus = { indexed: false };
+            }
+            updateIndexBadge();
+            updateSearchModeAvailability();
+        }
+
+        function updateIndexBadge() {
+            const badge = document.getElementById('indexBadge');
+            const dot = document.getElementById('badgeDot');
+            const text = document.getElementById('badgeText');
+            badge.style.display = 'inline-flex';
+
+            if (indexStatus && indexStatus.indexed) {
+                dot.className = 'badge-dot indexed';
+                text.textContent = `Indexed (${indexStatus.document_count} docs)`;
+            } else {
+                dot.className = 'badge-dot';
+                text.textContent = 'Not Indexed';
+            }
+        }
+
+        function updateSearchModeAvailability() {
+            const isIndexed = indexStatus && indexStatus.indexed;
+
+            const pairs = [
+                ['smSemantic', 'cbSemantic', isIndexed],
+                ['smMetadata', 'cbMetadata', isIndexed],
+            ];
+
+            for (const [labelId, cbId, enabled] of pairs) {
+                const label = document.getElementById(labelId);
+                const cb = document.getElementById(cbId);
+                if (enabled) {
+                    label.classList.remove('disabled');
+                    cb.disabled = false;
+                } else {
+                    label.classList.add('disabled');
+                    cb.disabled = true;
+                    cb.checked = false;
+                }
+            }
+        }
+
+        // ========== Indexing Config Modal ==========
+
+        function openIndexingModal() {
+            showIndexingConfigView();
+            indexingModal.classList.add('active');
+        }
+
+        function closeIndexingModal() {
+            indexingModal.classList.remove('active');
+        }
+
+        function showIndexingConfigView() {
+            const isIndexed = indexStatus && indexStatus.indexed;
+            const statusLine = isIndexed
+                ? `Currently indexed: <strong>${indexStatus.document_count}</strong> documents` +
+                  (indexStatus.schema_name ? ` &middot; Schema: ${esc(indexStatus.schema_name)}` : '')
+                : 'No index found for this folder.';
+
+            indexingModalContent.innerHTML = `
+                <div class="modal-title">${isIndexed ? 'Re-index Folder' : 'Index Folder'}</div>
+                <div style="font-size:12px;color:var(--ink-light);margin-bottom:20px;">${statusLine}</div>
+
+                <div class="modal-section">
+                    <div class="profile-label">Schema Source</div>
+                    <div class="radio-group">
+                        <label><input type="radio" name="modalSchemaSource" value="auto" checked> Auto-discover</label>
+                        <label><input type="radio" name="modalSchemaSource" value="custom"> Custom JSON</label>
+                    </div>
+                    <div id="modalSchemaArea">
+                        <button class="panel-btn" onclick="generateSchemaForModal()" id="modalGenBtn">Generate Schema</button>
+                    </div>
+                </div>
+
+                <div class="embed-toggle-row">
+                    <input type="checkbox" id="modalEmbedToggle">
+                    <span>Generate embeddings</span>
+                </div>
+
+                <div class="modal-actions">
+                    <button class="modal-btn secondary" onclick="closeIndexingModal()">Cancel</button>
+                    <button class="modal-btn" onclick="startIndexingFromModal()" id="modalStartBtn">Start Indexing</button>
+                </div>
+            `;
+
+            // Wire up schema source radio toggle
+            indexingModalContent.querySelectorAll('input[name="modalSchemaSource"]').forEach(r => {
+                r.addEventListener('change', () => {
+                    const area = document.getElementById('modalSchemaArea');
+                    if (r.value === 'auto' && r.checked) {
+                        area.innerHTML = '<button class="panel-btn" onclick="generateSchemaForModal()" id="modalGenBtn">Generate Schema</button>';
+                    } else if (r.value === 'custom' && r.checked) {
+                        area.innerHTML = `
+                            <div class="profile-label" style="margin-top:8px">Schema JSON</div>
+                            <div class="schema-editor">
+                                <textarea id="modalSchemaEditor">{
+  "name": "custom",
+  "fields": [
+    {"name": "document_type", "type": "string", "description": "Type of document."},
+    {"name": "mentions_currency", "type": "boolean", "description": "Contains monetary values."}
+  ]
+}</textarea>
+                            </div>
+                        `;
+                    }
+                });
+            });
+        }
+
+        async function generateSchemaForModal() {
+            const area = document.getElementById('modalSchemaArea');
+            area.innerHTML = '<span class="panel-spinner"></span> Discovering schema...';
+
+            try {
+                const res = await fetch('/api/index/auto-profile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folder: currentFolder }),
+                });
+                const data = await res.json();
+                if (data.error) {
+                    area.innerHTML = `<div style="color:var(--accent);font-size:12px;margin-bottom:8px">Error: ${esc(data.error)}</div>
+                        <button class="panel-btn" onclick="generateSchemaForModal()" id="modalGenBtn">Retry</button>`;
+                    return;
+                }
+                const schemaJson = JSON.stringify(data.profile, null, 2);
+                area.innerHTML = `
+                    <div class="profile-label" style="margin-top:8px">Schema JSON (editable)</div>
+                    <div class="schema-editor">
+                        <textarea id="modalSchemaEditor">${esc(schemaJson)}</textarea>
+                    </div>
+                    <button class="panel-btn" onclick="generateSchemaForModal()" style="margin-top:8px">Regenerate</button>
+                `;
+            } catch (e) {
+                area.innerHTML = `<div style="color:var(--accent);font-size:12px;margin-bottom:8px">Error: ${esc(e.message)}</div>
+                    <button class="panel-btn" onclick="generateSchemaForModal()" id="modalGenBtn">Retry</button>`;
+            }
+        }
+
+        async function startIndexingFromModal() {
+            if (isRunning) return;
+
+            // Parse schema from editor if present
+            let metadataProfile = null;
+            let withMetadata = false;
+            const editorEl = document.getElementById('modalSchemaEditor');
+            if (editorEl) {
+                const raw = editorEl.value.trim();
+                if (raw) {
+                    try {
+                        metadataProfile = JSON.parse(raw);
+                        withMetadata = true;
+                    } catch (e) {
+                        alert('Invalid JSON in schema editor: ' + e.message);
+                        return;
+                    }
+                }
+            }
+
+            const embedEl = document.getElementById('modalEmbedToggle');
+            const withEmbeddings = embedEl ? embedEl.checked : false;
+
+            isRunning = true;
+            updateStatus('Indexing', 'active');
+            progressBar.classList.add('active');
+
+            // Show progress view in modal
+            indexingModalContent.innerHTML = `
+                <div class="modal-title">Indexing in Progress</div>
+                <div style="text-align:center;padding:40px 0;">
+                    <span class="panel-spinner" style="width:24px;height:24px;border-width:3px;"></span>
+                    <div style="margin-top:16px;font-size:13px;color:var(--ink-light);">
+                        Parsing documents and building search index...
+                    </div>
+                </div>
+            `;
+
+            try {
+                const response = await fetch('/api/index', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        folder: currentFolder,
+                        discover_schema: true,
+                        with_metadata: withMetadata,
+                        metadata_profile: metadataProfile,
+                        with_embeddings: withEmbeddings,
+                    }),
+                });
+                const payload = await response.json();
+                if (!response.ok || payload.error) {
+                    throw new Error(payload.error || `Indexing failed (${response.status})`);
+                }
+                // Refresh status
+                await checkIndexStatus(currentFolder);
+                showIndexingSummary(payload);
+                updateStatus('Indexed', '');
+            } catch (e) {
+                indexingModalContent.innerHTML = `
+                    <div class="modal-title">Indexing Failed</div>
+                    <div style="color:var(--accent);margin-bottom:20px;font-size:13px;">${esc(e.message)}</div>
+                    <button class="modal-btn" onclick="closeIndexingModal()">Close</button>
+                `;
+                updateStatus('Error', 'error');
+            }
+            isRunning = false;
+            queryBtn.disabled = false;
+            progressBar.classList.remove('active');
+        }
+
+        function showIndexingSummary(result) {
+            indexingModalContent.innerHTML = `
+                <div class="modal-title">Indexing Complete</div>
+                <div class="indexing-summary">
+                    <dl>
+                        <dt>Documents indexed</dt>
+                        <dd>${result.indexed_files || 0}</dd>
+                        <dt>Active documents</dt>
+                        <dd>${result.active_documents || 0}</dd>
+                        <dt>Chunks written</dt>
+                        <dd>${result.chunks_written || 0}</dd>
+                        <dt>Skipped files</dt>
+                        <dd>${result.skipped_files || 0}</dd>
+                        <dt>Deleted files</dt>
+                        <dd>${result.deleted_files || 0}</dd>
+                        <dt>Schema</dt>
+                        <dd>${esc(result.schema_used || 'none')}</dd>
+                        <dt>Metadata mode</dt>
+                        <dd>${esc(result.metadata_mode || 'heuristic')}</dd>
+                        <dt>Embeddings written</dt>
+                        <dd>${result.embeddings_written || 0}</dd>
+                    </dl>
+                </div>
+                <div class="modal-actions">
+                    <button class="modal-btn" onclick="closeIndexingModal()">Done</button>
+                </div>
+            `;
+        }
+
+        // ========== Start Exploration ==========
+
+        async function startExploration() {
             const query = queryInput.value.trim();
             if (!query || isRunning) return;
 
-            // Close any existing WebSocket connection
-            if (ws) {
-                ws.close();
-                ws = null;
-            }
+            if (ws) { ws.close(); ws = null; }
 
             isRunning = true;
             stepCount = 0;
             queryBtn.disabled = true;
 
-            // Reset UI - clear steps and show empty state
             stepsList.innerHTML = '<div class="empty-state"><div class="prompt">Processing...</div><div class="hint">Starting exploration</div></div>';
             resultContent.innerHTML = '<div class="loading-text">Processing...</div>';
             statsBar.style.display = 'none';
             progressBar.classList.add('active');
             stepCountEl.textContent = '—';
-            
+
+            const enableSemantic = document.getElementById('cbSemantic').checked;
+            const enableMetadata = document.getElementById('cbMetadata').checked;
+            const useIndex = (enableSemantic || enableMetadata) && indexStatus && indexStatus.indexed;
             updateStatus('Connecting', 'active');
 
-            // WebSocket
-            const wsUrl = `ws://${window.location.host}/ws/explore`;
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const wsUrl = `${wsProtocol}://${window.location.host}/ws/explore`;
             ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
                 updateStatus('Executing', 'active');
-                ws.send(JSON.stringify({ task: query, folder: currentFolder }));
+                ws.send(JSON.stringify({
+                    task: query,
+                    folder: currentFolder,
+                    use_index: useIndex,
+                    enable_semantic: enableSemantic,
+                    enable_metadata: enableMetadata,
+                }));
             };
 
             ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
@@ -917,14 +1449,13 @@
 
         // Add step
         function addStep(data) {
-            // Clear empty state if this is the first step
             if (data.step === 1 && stepsList.querySelector('.empty-state')) {
                 stepsList.innerHTML = '';
             }
-            
+
             stepCount = data.step;
             stepCountEl.textContent = `${stepCount} ${stepCount === 1 ? 'step' : 'steps'}`;
-            
+
             const style = toolStyles[data.tool_name] || 'preview';
             const target = data.tool_input.directory || data.tool_input.file_path || '';
 
@@ -944,11 +1475,10 @@
 
         // Add nav step
         function addNavStep(data) {
-            // Clear empty state if this is the first step
             if (data.step === 1 && stepsList.querySelector('.empty-state')) {
                 stepsList.innerHTML = '';
             }
-            
+
             stepCount = data.step;
             stepCountEl.textContent = `${stepCount} ${stepCount === 1 ? 'step' : 'steps'}`;
 
@@ -992,10 +1522,9 @@
 
             let text = data.final_result || 'No result';
             text = text.replace(/\[Source:[^\]]+\]/g, m => `<span class="citation">${esc(m)}</span>`);
-            
+
             resultContent.innerHTML = `<div class="result-text">${text}</div>`;
 
-            // Stats
             const s = data.stats;
             if (s) {
                 statsBar.style.display = 'grid';
@@ -1061,7 +1590,7 @@
             try {
                 const res = await fetch(`/api/folders?path=${encodeURIComponent(path)}`);
                 const data = await res.json();
-                
+
                 if (data.error) {
                     folderList.innerHTML = `<div class="folder-empty">${esc(data.error)}</div>`;
                     return;
@@ -1107,6 +1636,7 @@
             currentFolder = browsingPath;
             currentPathEl.textContent = currentFolder;
             closeFolderPicker();
+            checkIndexStatus(currentFolder);
         }
 
         // Initialize with current directory
@@ -1121,6 +1651,7 @@
             } catch (e) {
                 console.error('Failed to get initial folder:', e);
             }
+            checkIndexStatus(currentFolder);
         })();
     </script>
 </body>

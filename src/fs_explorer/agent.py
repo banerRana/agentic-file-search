@@ -24,8 +24,13 @@ from .fs import (
     preview_file,
     parse_file,
 )
+from .embeddings import EmbeddingProvider
 from .index_config import resolve_db_path
-from .search import IndexedQueryEngine, MetadataFilterParseError, supported_filter_syntax
+from .search import (
+    IndexedQueryEngine,
+    MetadataFilterParseError,
+    supported_filter_syntax,
+)
 from .storage import DuckDBStorage
 
 # Load .env file from project root
@@ -47,28 +52,28 @@ GEMINI_FLASH_OUTPUT_COST_PER_MILLION = 0.30
 class TokenUsage:
     """
     Track token usage and costs across the session.
-    
+
     Maintains running totals of API calls, token counts, and provides
     cost estimates based on Gemini Flash pricing.
     """
-    
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
     api_calls: int = 0
-    
+
     # Track content sizes
     tool_result_chars: int = 0
     documents_parsed: int = 0
     documents_scanned: int = 0
-    
+
     def add_api_call(self, prompt_tokens: int, completion_tokens: int) -> None:
         """Record token usage from an API call."""
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens += prompt_tokens + completion_tokens
         self.api_calls += 1
-    
+
     def add_tool_result(self, result: str, tool_name: str) -> None:
         """Record metrics from a tool execution."""
         self.tool_result_chars += len(result)
@@ -79,17 +84,21 @@ class TokenUsage:
             self.documents_scanned += result.count("│ [")
         elif tool_name == "preview_file":
             self.documents_parsed += 1
-    
+
     def _calculate_cost(self) -> tuple[float, float, float]:
         """Calculate estimated costs based on Gemini Flash pricing."""
-        input_cost = (self.prompt_tokens / 1_000_000) * GEMINI_FLASH_INPUT_COST_PER_MILLION
-        output_cost = (self.completion_tokens / 1_000_000) * GEMINI_FLASH_OUTPUT_COST_PER_MILLION
+        input_cost = (
+            self.prompt_tokens / 1_000_000
+        ) * GEMINI_FLASH_INPUT_COST_PER_MILLION
+        output_cost = (
+            self.completion_tokens / 1_000_000
+        ) * GEMINI_FLASH_OUTPUT_COST_PER_MILLION
         return input_cost, output_cost, input_cost + output_cost
-    
+
     def summary(self) -> str:
         """Generate a formatted summary of token usage and costs."""
         input_cost, output_cost, total_cost = self._calculate_cost()
-        
+
         return f"""
 ═══════════════════════════════════════════════════════════════
                       TOKEN USAGE SUMMARY
@@ -125,24 +134,61 @@ class IndexContext:
 
 
 _INDEX_CONTEXT: IndexContext | None = None
+_EMBEDDING_PROVIDER: EmbeddingProvider | None = None
+_FIELD_CATALOG_SHOWN: bool = False
+_ENABLE_SEMANTIC: bool = False
+_ENABLE_METADATA: bool = False
+
+
+def set_search_flags(
+    *, enable_semantic: bool = False, enable_metadata: bool = False
+) -> None:
+    """Configure which indexed retrieval paths are active."""
+    global _ENABLE_SEMANTIC, _ENABLE_METADATA
+    _ENABLE_SEMANTIC = enable_semantic
+    _ENABLE_METADATA = enable_metadata
+
+
+def get_search_flags() -> tuple[bool, bool]:
+    """Return (enable_semantic, enable_metadata)."""
+    return _ENABLE_SEMANTIC, _ENABLE_METADATA
+
+
+def set_embedding_provider(provider: EmbeddingProvider | None) -> None:
+    """Set the embedding provider for vector search in indexed tools."""
+    global _EMBEDDING_PROVIDER
+    _EMBEDDING_PROVIDER = provider
 
 
 def set_index_context(folder: str, db_path: str | None = None) -> None:
     """Enable indexed tools for a specific folder corpus."""
-    global _INDEX_CONTEXT
+    global _INDEX_CONTEXT, _EMBEDDING_PROVIDER
     _INDEX_CONTEXT = IndexContext(
         root_folder=str(Path(folder).resolve()),
         db_path=resolve_db_path(db_path),
     )
+    # Auto-create embedding provider if API key available
+    if _EMBEDDING_PROVIDER is None:
+        try:
+            _EMBEDDING_PROVIDER = EmbeddingProvider()
+        except ValueError:
+            pass
 
 
 def clear_index_context() -> None:
     """Disable indexed tools for the current process."""
-    global _INDEX_CONTEXT
+    global _INDEX_CONTEXT, _EMBEDDING_PROVIDER, _FIELD_CATALOG_SHOWN
+    global _ENABLE_SEMANTIC, _ENABLE_METADATA
     _INDEX_CONTEXT = None
+    _EMBEDDING_PROVIDER = None
+    _FIELD_CATALOG_SHOWN = False
+    _ENABLE_SEMANTIC = False
+    _ENABLE_METADATA = False
 
 
-def _get_index_storage_and_corpus() -> tuple[DuckDBStorage | None, str | None, str | None]:
+def _get_index_storage_and_corpus() -> tuple[
+    DuckDBStorage | None, str | None, str | None
+]:
     if _INDEX_CONTEXT is None:
         return None, None, "Index context is not configured. Re-run with `--use-index`."
 
@@ -172,27 +218,24 @@ def semantic_search(query: str, filters: str | None = None, limit: int = 5) -> s
         return error
     assert storage is not None and corpus_id is not None
 
-    engine = IndexedQueryEngine(storage)
+    engine = IndexedQueryEngine(storage, embedding_provider=_EMBEDDING_PROVIDER)
     try:
         hits = engine.search(
             corpus_id=corpus_id,
             query=query,
             filters=filters,
             limit=limit,
+            enable_semantic=_ENABLE_SEMANTIC,
+            enable_metadata=_ENABLE_METADATA,
         )
     except MetadataFilterParseError as exc:
-        return (
-            f"Invalid metadata filter: {exc}\n"
-            f"{supported_filter_syntax()}"
-        )
+        return f"Invalid metadata filter: {exc}\n{supported_filter_syntax()}"
     except ValueError as exc:
         return f"Metadata filter error: {exc}"
 
     if not hits:
         if filters:
-            return (
-                f"No indexed matches found for query={query!r} with filters={filters!r}."
-            )
+            return f"No indexed matches found for query={query!r} with filters={filters!r}."
         return f"No indexed matches found for query: {query!r}"
 
     lines = [
@@ -220,6 +263,65 @@ def semantic_search(query: str, filters: str | None = None, limit: int = 5) -> s
     lines.append(
         "Use get_document(doc_id=...) to read full content for the most relevant documents."
     )
+
+    # Include a rich field catalog on the first search so the agent can
+    # construct effective metadata filters.
+    global _FIELD_CATALOG_SHOWN
+    if not _FIELD_CATALOG_SHOWN:
+        active_schema = storage.get_active_schema(corpus_id=corpus_id)
+        if active_schema is not None:
+            schema_fields = active_schema.schema_def.get("fields")
+            if isinstance(schema_fields, list) and schema_fields:
+                field_names = [
+                    str(f["name"])
+                    for f in schema_fields
+                    if isinstance(f, dict) and isinstance(f.get("name"), str)
+                ]
+                field_values = storage.get_metadata_field_values(
+                    corpus_id=corpus_id,
+                    field_names=field_names,
+                )
+                field_descs: list[str] = []
+                for field in schema_fields:
+                    if not isinstance(field, dict) or not isinstance(
+                        field.get("name"), str
+                    ):
+                        continue
+                    name = field["name"]
+                    ftype = field.get("type", "string")
+                    desc = field.get("description", "")
+                    entry = f"{name} ({ftype})"
+                    if desc:
+                        entry += f": {desc}"
+                    vals = field_values.get(name, [])
+                    if ftype == "boolean":
+                        entry += " Values: true, false"
+                    elif ftype in {"integer", "number"} and vals:
+                        nums = []
+                        for v in vals:
+                            try:
+                                nums.append(float(v))
+                            except (TypeError, ValueError):
+                                pass
+                        if nums:
+                            entry += f" Range: {min(nums):.6g}-{max(nums):.6g}"
+                    elif vals:
+                        if "enum" in field:
+                            entry += f" Values: {field['enum']}"
+                        else:
+                            entry += f" Values: {', '.join(repr(v) for v in vals)}"
+                    elif "enum" in field:
+                        entry += f" Values: {field['enum']}"
+                    field_descs.append(entry)
+                if field_descs:
+                    lines.append("")
+                    lines.append(
+                        "Available filter fields for semantic_search(filters=...):"
+                    )
+                    for desc in field_descs:
+                        lines.append(f"  - {desc}")
+                _FIELD_CATALOG_SHOWN = True
+
     return "\n".join(lines)
 
 
@@ -406,30 +508,55 @@ User asks: "What is the purchase price?"
 ```
 """
 
+def _build_system_prompt(enable_semantic: bool, enable_metadata: bool) -> str:
+    """Build a system prompt with retrieval-path guidance appended."""
+    if enable_semantic and enable_metadata:
+        hint = (
+            "\n\n## Retrieval: Semantic + Metadata\n"
+            "An index is available. Start with `semantic_search` using optional "
+            "`filters` for best results, then use filesystem tools for deep dives."
+        )
+    elif enable_semantic:
+        hint = (
+            "\n\n## Retrieval: Semantic Only\n"
+            "An index is available. Use `semantic_search` WITHOUT the `filters` "
+            "parameter for similarity search, then use filesystem tools for details."
+        )
+    elif enable_metadata:
+        hint = (
+            "\n\n## Retrieval: Metadata Only\n"
+            "An index is available. Use `semantic_search` with the `filters=` "
+            "parameter for metadata filtering, then use filesystem tools for details."
+        )
+    else:
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + hint
+
 
 # =============================================================================
 # Agent Implementation
 # =============================================================================
 
+
 class FsExplorerAgent:
     """
     AI agent for exploring filesystems using Google Gemini.
-    
+
     The agent maintains a conversation history with the LLM and uses
     structured JSON output to make decisions about which actions to take.
-    
+
     Attributes:
         token_usage: Tracks API call statistics and costs.
     """
-    
+
     def __init__(self, api_key: str | None = None) -> None:
         """
         Initialize the agent with Google API credentials.
-        
+
         Args:
             api_key: Google API key. If not provided, reads from
                      GOOGLE_API_KEY environment variable.
-        
+
         Raises:
             ValueError: If no API key is available.
         """
@@ -440,7 +567,7 @@ class FsExplorerAgent:
                 "GOOGLE_API_KEY not found within the current environment: "
                 "please export it or provide it to the class constructor."
             )
-        
+
         self._client = GenAIClient(
             api_key=api_key,
             http_options=HttpOptions(api_version="v1beta"),
@@ -451,7 +578,7 @@ class FsExplorerAgent:
     def configure_task(self, task: str) -> None:
         """
         Add a task message to the conversation history.
-        
+
         Args:
             task: The task or context to add to the conversation.
         """
@@ -462,10 +589,10 @@ class FsExplorerAgent:
     async def take_action(self) -> tuple[Action, ActionType] | None:
         """
         Request the next action from the AI model.
-        
+
         Sends the current conversation history to Gemini and receives
         a structured JSON response indicating the next action to take.
-        
+
         Returns:
             A tuple of (Action, ActionType) if successful, None otherwise.
         """
@@ -473,19 +600,19 @@ class FsExplorerAgent:
             model="gemini-3-flash-preview",
             contents=self._chat_history,  # type: ignore
             config={
-                "system_instruction": SYSTEM_PROMPT,
+                "system_instruction": _build_system_prompt(_ENABLE_SEMANTIC, _ENABLE_METADATA),
                 "response_mime_type": "application/json",
                 "response_schema": Action,
             },
         )
-        
+
         # Track token usage from response metadata
         if response.usage_metadata:
             self.token_usage.add_api_call(
                 prompt_tokens=response.usage_metadata.prompt_token_count or 0,
                 completion_tokens=response.usage_metadata.candidates_token_count or 0,
             )
-        
+
         if response.candidates is not None:
             if response.candidates[0].content is not None:
                 self._chat_history.append(response.candidates[0].content)
@@ -498,13 +625,13 @@ class FsExplorerAgent:
                         tool_input=toolcall.to_fn_args(),
                     )
                 return action, action.to_action_type()
-        
+
         return None
 
     def call_tool(self, tool_name: Tools, tool_input: dict[str, Any]) -> None:
         """
         Execute a tool and add the result to the conversation history.
-        
+
         Args:
             tool_name: Name of the tool to execute.
             tool_input: Dictionary of arguments to pass to the tool.
@@ -516,14 +643,16 @@ class FsExplorerAgent:
                 f"An error occurred while calling tool {tool_name} "
                 f"with {tool_input}: {e}"
             )
-        
+
         # Track tool result sizes
         self.token_usage.add_tool_result(result, tool_name)
-        
+
         self._chat_history.append(
             Content(
                 role="user",
-                parts=[Part.from_text(text=f"Tool result for {tool_name}:\n\n{result}")],
+                parts=[
+                    Part.from_text(text=f"Tool result for {tool_name}:\n\n{result}")
+                ],
             )
         )
 

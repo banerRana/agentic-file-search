@@ -43,13 +43,18 @@ class DuckDBStorage:
         *,
         read_only: bool = False,
         initialize: bool = True,
+        embedding_dim: int = 768,
     ) -> None:
         self.db_path = str(Path(db_path).expanduser().resolve())
         self.read_only = read_only
+        self.embedding_dim = embedding_dim
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = duckdb.connect(self.db_path, read_only=read_only)
+        self._vss_available = False
         if initialize and not read_only:
             self.initialize()
+        if not read_only:
+            self._try_load_vss()
 
     def close(self) -> None:
         """Close the underlying DuckDB connection."""
@@ -108,6 +113,24 @@ class DuckDBStorage:
             );
             """
         )
+        self._conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS chunk_embeddings (
+                chunk_id VARCHAR PRIMARY KEY REFERENCES chunks(id),
+                corpus_id VARCHAR NOT NULL,
+                embedding FLOAT[{self.embedding_dim}] NOT NULL
+            );
+            """
+        )
+
+    def _try_load_vss(self) -> None:
+        """Attempt to install and load the vss extension for HNSW acceleration."""
+        try:
+            self._conn.execute("INSTALL vss")
+            self._conn.execute("LOAD vss")
+            self._vss_available = True
+        except Exception:
+            self._vss_available = False
 
     def get_or_create_corpus(self, root_path: str) -> str:
         normalized = str(Path(root_path).resolve())
@@ -138,8 +161,17 @@ class DuckDBStorage:
             return None
         return str(row[0])
 
-    def upsert_document(self, document: DocumentRecord, chunks: list[ChunkRecord]) -> None:
-        # Remove old chunks first to avoid FK limitations on upsert updates in DuckDB.
+    def upsert_document(
+        self, document: DocumentRecord, chunks: list[ChunkRecord]
+    ) -> None:
+        # Cascade-delete embeddings for old chunks, then remove old chunks.
+        self._conn.execute(
+            """
+            DELETE FROM chunk_embeddings
+            WHERE chunk_id IN (SELECT id FROM chunks WHERE doc_id = ?)
+            """,
+            [document.id],
+        )
         self._conn.execute("DELETE FROM chunks WHERE doc_id = ?", [document.id])
 
         self._conn.execute(
@@ -288,7 +320,8 @@ class DuckDBStorage:
             return []
 
         score_expr = " + ".join(
-            ["CASE WHEN lower(c.text) LIKE '%' || ? || '%' THEN 1 ELSE 0 END"] * len(terms)
+            ["CASE WHEN lower(c.text) LIKE '%' || ? || '%' THEN 1 ELSE 0 END"]
+            * len(terms)
         )
         sql = f"""
             SELECT * FROM (
@@ -481,7 +514,9 @@ class DuckDBStorage:
         return _stable_id("doc", f"{corpus_id}:{relative_path}")
 
     @staticmethod
-    def make_chunk_id(doc_id: str, position: int, start_char: int, end_char: int) -> str:
+    def make_chunk_id(
+        doc_id: str, position: int, start_char: int, end_char: int
+    ) -> str:
         return _stable_id("chunk", f"{doc_id}:{position}:{start_char}:{end_char}")
 
     @staticmethod
@@ -494,6 +529,121 @@ class DuckDBStorage:
             is_active=bool(row[4]),
             created_at=str(row[5]),
         )
+
+    def store_chunk_embeddings(
+        self,
+        *,
+        corpus_id: str,
+        chunk_embeddings: list[tuple[str, list[float]]],
+    ) -> int:
+        """Bulk-store (chunk_id, embedding) pairs. Return count written."""
+        if not chunk_embeddings:
+            return 0
+        self._conn.executemany(
+            """
+            INSERT INTO chunk_embeddings (chunk_id, corpus_id, embedding)
+            VALUES (?, ?, ?)
+            ON CONFLICT(chunk_id) DO UPDATE SET
+                corpus_id = excluded.corpus_id,
+                embedding = excluded.embedding
+            """,
+            [(cid, corpus_id, emb) for cid, emb in chunk_embeddings],
+        )
+        return len(chunk_embeddings)
+
+    def search_chunks_semantic(
+        self,
+        *,
+        corpus_id: str,
+        query_embedding: list[float],
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Search chunks by cosine similarity against a query embedding."""
+        sql = """
+            SELECT
+                d.id AS doc_id,
+                d.relative_path,
+                d.absolute_path,
+                c.position,
+                c.text,
+                array_cosine_similarity(ce.embedding, ?::FLOAT[{dim}]) AS score
+            FROM chunk_embeddings ce
+            JOIN chunks c ON c.id = ce.chunk_id
+            JOIN documents d ON d.id = c.doc_id
+            WHERE ce.corpus_id = ?
+              AND d.is_deleted = FALSE
+            ORDER BY score DESC
+            LIMIT ?
+        """.format(dim=self.embedding_dim)
+        rows = self._conn.execute(sql, [query_embedding, corpus_id, limit]).fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            results.append(
+                {
+                    "doc_id": str(row[0]),
+                    "relative_path": str(row[1]),
+                    "absolute_path": str(row[2]),
+                    "position": int(row[3]),
+                    "text": str(row[4]),
+                    "score": float(row[5]),
+                }
+            )
+        return results
+
+    def get_metadata_field_values(
+        self,
+        *,
+        corpus_id: str,
+        field_names: list[str],
+        max_distinct: int = 10,
+    ) -> dict[str, list[str]]:
+        """Return up to *max_distinct* distinct non-empty values per metadata field."""
+        result: dict[str, list[str]] = {}
+        for field in field_names:
+            rows = self._conn.execute(
+                """
+                SELECT DISTINCT json_extract_string(d.metadata_json, ?) AS val
+                FROM documents d
+                WHERE d.corpus_id = ?
+                  AND d.is_deleted = FALSE
+                  AND val IS NOT NULL
+                  AND val != ''
+                LIMIT ?
+                """,
+                [f"$.{field}", corpus_id, max_distinct],
+            ).fetchall()
+            result[field] = [str(row[0]) for row in rows]
+        return result
+
+    def has_embeddings(self, *, corpus_id: str) -> bool:
+        """Return True if the corpus has stored embeddings."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM chunk_embeddings WHERE corpus_id = ?",
+            [corpus_id],
+        ).fetchone()
+        return bool(row and int(row[0]) > 0)
+
+    def create_hnsw_index(self, *, corpus_id: str) -> bool:
+        """Create an HNSW index on chunk embeddings if vss is available.
+
+        Returns True if the index was created, False otherwise.
+        """
+        if not self._vss_available:
+            return False
+        try:
+            index_name = f"hnsw_{corpus_id.replace('-', '_')}"
+            self._conn.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {index_name}
+                ON chunk_embeddings
+                USING HNSW (embedding)
+                WITH (metric = 'cosine')
+                """
+            )
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _metadata_clause(
@@ -547,7 +697,9 @@ class DuckDBStorage:
 
         if operator == "in":
             if not isinstance(value, list) or not value:
-                raise ValueError(f"Metadata `in` filter for field {field!r} has no values.")
+                raise ValueError(
+                    f"Metadata `in` filter for field {field!r} has no values."
+                )
 
             if all(isinstance(item, bool) for item in value):
                 placeholders = ", ".join(["?"] * len(value))
@@ -559,7 +711,10 @@ class DuckDBStorage:
                     ],
                 )
 
-            if all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value):
+            if all(
+                isinstance(item, (int, float)) and not isinstance(item, bool)
+                for item in value
+            ):
                 placeholders = ", ".join(["?"] * len(value))
                 return (
                     f"try_cast({json_expr} AS DOUBLE) IN ({placeholders})",

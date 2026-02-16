@@ -7,7 +7,15 @@ from unittest.mock import patch
 from google.genai import Client as GenAIClient
 from google.genai.types import HttpOptions
 
-from fs_explorer.agent import FsExplorerAgent, SYSTEM_PROMPT, TokenUsage
+from fs_explorer.agent import (
+    FsExplorerAgent,
+    SYSTEM_PROMPT,
+    TokenUsage,
+    _build_system_prompt,
+    set_search_flags,
+    get_search_flags,
+    clear_index_context,
+)
 from fs_explorer.models import Action, StopAction
 from .conftest import MockGenAIClient
 
@@ -168,3 +176,54 @@ class TestSystemPrompt:
         assert "semantic_search" in SYSTEM_PROMPT
         assert "get_document" in SYSTEM_PROMPT
         assert "list_indexed_documents" in SYSTEM_PROMPT
+
+
+class TestSearchFlags:
+    """Tests for search flag state and dynamic system prompt."""
+
+    def setup_method(self) -> None:
+        clear_index_context()
+
+    def teardown_method(self) -> None:
+        clear_index_context()
+
+    def test_set_and_get_search_flags(self) -> None:
+        assert get_search_flags() == (False, False)
+        set_search_flags(enable_semantic=True, enable_metadata=False)
+        assert get_search_flags() == (True, False)
+        set_search_flags(enable_semantic=False, enable_metadata=False)
+        assert get_search_flags() == (False, False)
+
+    def test_clear_index_context_resets_flags(self) -> None:
+        set_search_flags(enable_semantic=True, enable_metadata=True)
+        clear_index_context()
+        assert get_search_flags() == (False, False)
+
+    def test_build_system_prompt_no_index(self) -> None:
+        prompt = _build_system_prompt(False, False)
+        assert prompt == SYSTEM_PROMPT
+
+    def test_build_system_prompt_semantic_only(self) -> None:
+        prompt = _build_system_prompt(True, False)
+        assert "Semantic Only" in prompt
+        assert "WITHOUT the `filters`" in prompt
+
+    def test_build_system_prompt_metadata_only(self) -> None:
+        prompt = _build_system_prompt(False, True)
+        assert "Metadata Only" in prompt
+        assert "metadata filtering" in prompt
+
+    def test_build_system_prompt_both(self) -> None:
+        prompt = _build_system_prompt(True, True)
+        assert "Semantic + Metadata" in prompt
+
+    @patch.dict(os.environ, {"GOOGLE_API_KEY": "test-api-key"})
+    def test_all_tools_always_available(self) -> None:
+        """Filesystem and indexed tools are never blocked."""
+        set_search_flags(enable_semantic=False, enable_metadata=False)
+        agent = FsExplorerAgent()
+        agent.configure_task("test")
+        agent.call_tool("glob", {"directory": "/tmp", "pattern": "*.md"})
+
+        last = agent._chat_history[-1]
+        assert "not available" not in last.parts[0].text
