@@ -10,7 +10,7 @@ import asyncio
 import os
 from datetime import datetime
 
-from typer import Typer, Option
+from typer import Typer, Option, Argument, Context, BadParameter, Exit
 from typing import Annotated
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -18,6 +18,9 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from .index_config import resolve_db_path
+from .indexing import IndexingPipeline, SchemaDiscovery
+from .storage import DuckDBStorage
 from .workflow import (
     workflow,
     InputEvent,
@@ -31,6 +34,8 @@ from .workflow import (
 from .exploration_trace import ExplorationTrace, extract_cited_sources
 
 app = Typer()
+schema_app = Typer(help="Manage metadata schemas for indexed corpora.")
+app.add_typer(schema_app, name="schema")
 
 
 # Tool icons for visual distinction
@@ -326,16 +331,17 @@ async def run_workflow(task: str, folder: str = ".") -> None:
     print_workflow_summary(console, agent, step_number, trace, cited_sources)
 
 
-@app.command()
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: Context,
     task: Annotated[
-        str,
+        str | None,
         Option(
             "--task",
             "-t",
             help="Task that the FsExplorer Agent has to perform while exploring the current directory.",
         ),
-    ],
+    ] = None,
     folder: Annotated[
         str,
         Option(
@@ -346,9 +352,180 @@ def main(
     ] = ".",
 ) -> None:
     """
-    Explore the filesystem to answer questions about documents.
+    Explore documents with an agent, build indexes, and manage schema metadata.
     
-    The agent will scan, analyze, and parse relevant documents to provide
-    comprehensive answers with source citations.
+    Backward-compatible mode:
+    - `explore --task "..." [--folder ...]`
     """
+    if ctx.invoked_subcommand is not None:
+        return
+
+    if task is None or not task.strip():
+        raise BadParameter("`--task` is required unless you run a subcommand.")
+
     asyncio.run(run_workflow(task, folder))
+
+
+@app.command("index")
+def index_command(
+    folder: Annotated[
+        str,
+        Argument(help="Folder to index recursively."),
+    ] = ".",
+    db_path: Annotated[
+        str | None,
+        Option("--db-path", help="Path to DuckDB index file."),
+    ] = None,
+    discover_schema: Annotated[
+        bool,
+        Option(
+            "--discover-schema",
+            help="Auto-discover metadata schema and set it active for this corpus.",
+        ),
+    ] = False,
+    schema_name: Annotated[
+        str | None,
+        Option("--schema-name", help="Use an existing stored schema by name."),
+    ] = None,
+) -> None:
+    """Build or refresh an index for a folder."""
+    console = Console()
+    resolved_db_path = resolve_db_path(db_path)
+    storage = DuckDBStorage(resolved_db_path)
+    pipeline = IndexingPipeline(storage=storage)
+
+    try:
+        result = pipeline.index_folder(
+            folder,
+            discover_schema=discover_schema,
+            schema_name=schema_name,
+        )
+    except ValueError as exc:
+        raise BadParameter(str(exc)) from exc
+
+    summary = Table.grid(padding=(0, 2))
+    summary.add_column(style="bold", justify="right")
+    summary.add_column()
+    summary.add_row("DB Path:", resolved_db_path)
+    summary.add_row("Corpus ID:", result.corpus_id)
+    summary.add_row("Indexed Files:", str(result.indexed_files))
+    summary.add_row("Skipped Files:", str(result.skipped_files))
+    summary.add_row("Deleted Files:", str(result.deleted_files))
+    summary.add_row("Chunks Written:", str(result.chunks_written))
+    summary.add_row("Active Documents:", str(result.active_documents))
+    summary.add_row("Schema Used:", result.schema_used or "<none>")
+
+    console.print(Panel(summary, title="📦 Index Complete", border_style="bold green"))
+
+
+@schema_app.command("discover")
+def schema_discover_command(
+    folder: Annotated[
+        str,
+        Argument(help="Folder to inspect for schema discovery."),
+    ] = ".",
+    db_path: Annotated[
+        str | None,
+        Option("--db-path", help="Path to DuckDB index file."),
+    ] = None,
+    name: Annotated[
+        str | None,
+        Option("--name", help="Override discovered schema name."),
+    ] = None,
+    activate: Annotated[
+        bool,
+        Option(
+            "--activate/--no-activate",
+            help="Set schema as active for the corpus.",
+        ),
+    ] = True,
+) -> None:
+    """Auto-discover and store a metadata schema for a folder."""
+    console = Console()
+    resolved_folder = str(os.path.abspath(folder))
+    if not os.path.isdir(resolved_folder):
+        raise BadParameter(f"No such directory: {resolved_folder}")
+
+    resolved_db_path = resolve_db_path(db_path)
+    storage = DuckDBStorage(resolved_db_path)
+    corpus_id = storage.get_or_create_corpus(resolved_folder)
+
+    discovery = SchemaDiscovery()
+    discovered = discovery.discover_from_folder(resolved_folder)
+    schema_name = name or str(discovered.get("name", f"auto_{os.path.basename(resolved_folder)}"))
+    discovered["name"] = schema_name
+    schema_id = storage.save_schema(
+        corpus_id=corpus_id,
+        name=schema_name,
+        schema_def=discovered,
+        is_active=activate,
+    )
+
+    output = Table.grid(padding=(0, 2))
+    output.add_column(style="bold", justify="right")
+    output.add_column()
+    output.add_row("DB Path:", resolved_db_path)
+    output.add_row("Corpus ID:", corpus_id)
+    output.add_row("Schema ID:", schema_id)
+    output.add_row("Schema Name:", schema_name)
+    output.add_row("Active:", str(activate))
+    output.add_row("Field Count:", str(len(discovered.get("fields", []))))
+
+    console.print(Panel(output, title="🧩 Schema Saved", border_style="bold cyan"))
+    console.print_json(json.dumps(discovered, indent=2))
+
+
+@schema_app.command("show")
+def schema_show_command(
+    folder: Annotated[
+        str,
+        Argument(help="Folder whose schemas should be listed."),
+    ] = ".",
+    db_path: Annotated[
+        str | None,
+        Option("--db-path", help="Path to DuckDB index file."),
+    ] = None,
+) -> None:
+    """Show saved schemas for a folder's corpus."""
+    console = Console()
+    resolved_folder = str(os.path.abspath(folder))
+    resolved_db_path = resolve_db_path(db_path)
+    storage = DuckDBStorage(resolved_db_path)
+
+    corpus_id = storage.get_corpus_id(resolved_folder)
+    if corpus_id is None:
+        console.print(
+            Panel(
+                f"No corpus found for folder: {resolved_folder}\nRun `explore index {resolved_folder}` first.",
+                title="⚠️ No Corpus",
+                border_style="bold yellow",
+            )
+        )
+        raise Exit(code=1)
+
+    schemas = storage.list_schemas(corpus_id=corpus_id)
+    if not schemas:
+        console.print(
+            Panel(
+                f"No schemas saved for corpus: {corpus_id}",
+                title="⚠️ No Schemas",
+                border_style="bold yellow",
+            )
+        )
+        raise Exit(code=1)
+
+    table = Table(title=f"Schemas for {resolved_folder}")
+    table.add_column("Name")
+    table.add_column("Active")
+    table.add_column("Created At")
+    table.add_column("Field Count")
+
+    for schema in schemas:
+        table.add_row(
+            schema.name,
+            "yes" if schema.is_active else "no",
+            schema.created_at,
+            str(len(schema.schema_def.get("fields", []))),
+        )
+
+    console.print(table)
