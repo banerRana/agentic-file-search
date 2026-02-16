@@ -8,11 +8,19 @@ from typer.testing import CliRunner
 
 
 def test_root_task_mode_remains_compatible(tmp_path: Path, monkeypatch) -> None:
-    called: dict[str, str] = {}
+    called: dict[str, object] = {}
 
-    async def fake_run_workflow(task: str, folder: str = ".") -> None:
+    async def fake_run_workflow(
+        task: str,
+        folder: str = ".",
+        *,
+        use_index: bool = False,
+        db_path: str | None = None,
+    ) -> None:
         called["task"] = task
         called["folder"] = folder
+        called["use_index"] = use_index
+        called["db_path"] = db_path
 
     monkeypatch.setattr(main_module, "run_workflow", fake_run_workflow)
 
@@ -25,6 +33,37 @@ def test_root_task_mode_remains_compatible(tmp_path: Path, monkeypatch) -> None:
     assert result.exit_code == 0
     assert called["task"] == "who is the CTO?"
     assert called["folder"] == str(tmp_path)
+    assert called["use_index"] is False
+
+
+def test_query_command_enables_index_mode(tmp_path: Path, monkeypatch) -> None:
+    called: dict[str, object] = {}
+
+    async def fake_run_workflow(
+        task: str,
+        folder: str = ".",
+        *,
+        use_index: bool = False,
+        db_path: str | None = None,
+    ) -> None:
+        called["task"] = task
+        called["folder"] = folder
+        called["use_index"] = use_index
+        called["db_path"] = db_path
+
+    monkeypatch.setattr(main_module, "run_workflow", fake_run_workflow)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main_module.app,
+        ["query", "--task", "purchase price?", "--folder", str(tmp_path), "--db-path", "tmp.duckdb"],
+    )
+
+    assert result.exit_code == 0
+    assert called["task"] == "purchase price?"
+    assert called["folder"] == str(tmp_path)
+    assert called["use_index"] is True
+    assert called["db_path"] == "tmp.duckdb"
 
 
 def test_index_and_schema_commands(tmp_path: Path, monkeypatch) -> None:

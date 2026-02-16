@@ -67,6 +67,16 @@ def test_indexing_pipeline_indexes_and_marks_deleted(
     assert first_result.schema_used is not None
     assert storage.count_chunks(corpus_id=first_result.corpus_id) > 0
 
+    hits = storage.search_chunks(
+        corpus_id=first_result.corpus_id,
+        query="purchase price",
+        limit=3,
+    )
+    assert hits
+    top_doc = storage.get_document(doc_id=hits[0]["doc_id"])
+    assert top_doc is not None
+    assert "Purchase price" in top_doc["content"]
+
     second.unlink()
 
     second_result = pipeline.index_folder(str(corpus))

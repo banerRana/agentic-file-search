@@ -44,6 +44,20 @@ def test_trace_records_steps_and_documents() -> None:
     assert referenced[0].endswith("docs/contract.pdf")
 
 
+def test_trace_records_resolved_document_paths() -> None:
+    trace = ExplorationTrace(root_directory="/tmp/project")
+
+    trace.record_tool_call(
+        step_number=1,
+        tool_name="get_document",
+        tool_input={"doc_id": "doc_123"},
+        resolved_document_path="/tmp/project/docs/indexed.pdf",
+    )
+
+    assert "document=/tmp/project/docs/indexed.pdf" in trace.step_path[0]
+    assert trace.sorted_documents() == ["/tmp/project/docs/indexed.pdf"]
+
+
 def test_extract_cited_sources_ordered_unique() -> None:
     final_result = (
         "Price is $10M [Source: agreement.pdf, Section 2.1]. "

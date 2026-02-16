@@ -11,6 +11,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from .agent import set_index_context, clear_index_context
+from .index_config import resolve_db_path
+from .storage import DuckDBStorage
 from .workflow import (
     workflow,
     InputEvent,
@@ -30,6 +33,8 @@ class TaskRequest(BaseModel):
     """Request model for task submission."""
     task: str
     folder: str = "."
+    use_index: bool = False
+    db_path: str | None = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -92,6 +97,9 @@ async def websocket_explore(websocket: WebSocket):
         data = await websocket.receive_json()
         task = data.get("task", "")
         folder = data.get("folder", ".")
+        use_index = bool(data.get("use_index", False))
+        db_path = data.get("db_path")
+        index_storage: DuckDBStorage | None = None
         
         if not task:
             await websocket.send_json({
@@ -109,6 +117,25 @@ async def websocket_explore(websocket: WebSocket):
             })
             return
 
+        clear_index_context()
+        if use_index:
+            resolved_db_path = resolve_db_path(db_path if isinstance(db_path, str) else None)
+            storage = DuckDBStorage(resolved_db_path)
+            corpus_id = storage.get_corpus_id(str(folder_path))
+            if corpus_id is None:
+                await websocket.send_json({
+                    "type": "error",
+                    "data": {
+                        "message": (
+                            "No index found for the selected folder. "
+                            "Run `explore index <folder>` first."
+                        )
+                    }
+                })
+                return
+            index_storage = storage
+            set_index_context(str(folder_path), resolved_db_path)
+
         trace = ExplorationTrace(root_directory=str(folder_path))
         
         # Reset agent for fresh state
@@ -117,20 +144,42 @@ async def websocket_explore(websocket: WebSocket):
         # Send start event
         await websocket.send_json({
             "type": "start",
-            "data": {"task": task, "folder": str(folder_path)}
+            "data": {
+                "task": task,
+                "folder": str(folder_path),
+                "use_index": use_index,
+            }
         })
         
         # Run the workflow
         step_number = 0
-        handler = workflow.run(start_event=InputEvent(task=task, folder=str(folder_path)))
+        handler = workflow.run(
+            start_event=InputEvent(
+                task=task,
+                folder=str(folder_path),
+                use_index=use_index,
+            )
+        )
         
         async for event in handler.stream_events():
             if isinstance(event, ToolCallEvent):
                 step_number += 1
+                resolved_document_path: str | None = None
+                if event.tool_name == "get_document":
+                    doc_id = event.tool_input.get("doc_id")
+                    if (
+                        index_storage is not None
+                        and isinstance(doc_id, str)
+                        and doc_id
+                    ):
+                        document = index_storage.get_document(doc_id=doc_id)
+                        if document and not document["is_deleted"]:
+                            resolved_document_path = str(document["absolute_path"])
                 trace.record_tool_call(
                     step_number=step_number,
                     tool_name=event.tool_name,
                     tool_input=event.tool_input,
+                    resolved_document_path=resolved_document_path,
                 )
                 await websocket.send_json({
                     "type": "tool_call",
@@ -212,6 +261,8 @@ async def websocket_explore(websocket: WebSocket):
             "type": "error",
             "data": {"message": str(e)}
         })
+    finally:
+        clear_index_context()
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000):

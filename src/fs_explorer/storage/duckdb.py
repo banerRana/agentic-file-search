@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,20 @@ from .base import ChunkRecord, DocumentRecord, SchemaRecord
 def _stable_id(prefix: str, value: str) -> str:
     digest = hashlib.sha1(value.encode("utf-8")).hexdigest()
     return f"{prefix}_{digest}"
+
+
+def _query_terms(query: str, max_terms: int = 8) -> list[str]:
+    terms = re.findall(r"[a-zA-Z0-9_]{3,}", query.lower())
+    unique_terms: list[str] = []
+    for term in terms:
+        if term not in unique_terms:
+            unique_terms.append(term)
+        if len(unique_terms) >= max_terms:
+            break
+    if unique_terms:
+        return unique_terms
+    fallback = query.strip().lower()
+    return [fallback] if fallback else []
 
 
 class DuckDBStorage:
@@ -248,6 +263,81 @@ class DuckDBStorage:
             [corpus_id],
         ).fetchone()
         return int(row[0]) if row else 0
+
+    def search_chunks(
+        self,
+        *,
+        corpus_id: str,
+        query: str,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        terms = _query_terms(query)
+        if not terms:
+            return []
+
+        score_expr = " + ".join(
+            ["CASE WHEN lower(c.text) LIKE '%' || ? || '%' THEN 1 ELSE 0 END"] * len(terms)
+        )
+        sql = f"""
+            SELECT * FROM (
+                SELECT
+                    d.id AS doc_id,
+                    d.relative_path,
+                    d.absolute_path,
+                    c.position,
+                    c.text,
+                    ({score_expr}) AS score
+                FROM chunks c
+                JOIN documents d ON d.id = c.doc_id
+                WHERE d.corpus_id = ?
+                  AND d.is_deleted = FALSE
+            ) ranked
+            WHERE score > 0
+            ORDER BY score DESC, relative_path ASC, position ASC
+            LIMIT ?
+        """
+        params: list[Any] = []
+        params.extend(terms)
+        params.append(corpus_id)
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            results.append(
+                {
+                    "doc_id": str(row[0]),
+                    "relative_path": str(row[1]),
+                    "absolute_path": str(row[2]),
+                    "position": int(row[3]),
+                    "text": str(row[4]),
+                    "score": int(row[5]),
+                }
+            )
+        return results
+
+    def get_document(self, *, doc_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            """
+            SELECT
+                id, corpus_id, relative_path, absolute_path, content, metadata_json, is_deleted
+            FROM documents
+            WHERE id = ?
+            LIMIT 1
+            """,
+            [doc_id],
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row[0]),
+            "corpus_id": str(row[1]),
+            "relative_path": str(row[2]),
+            "absolute_path": str(row[3]),
+            "content": str(row[4]),
+            "metadata_json": str(row[5]),
+            "is_deleted": bool(row[6]),
+        }
 
     def save_schema(
         self,

@@ -162,3 +162,9 @@ class TestSystemPrompt:
         assert "Three-Phase" in SYSTEM_PROMPT or "PHASE" in SYSTEM_PROMPT
         assert "Parallel Scan" in SYSTEM_PROMPT or "PARALLEL" in SYSTEM_PROMPT
         assert "Backtracking" in SYSTEM_PROMPT or "BACKTRACK" in SYSTEM_PROMPT
+
+    def test_system_prompt_contains_index_tools(self) -> None:
+        """Test that system prompt documents index-aware tools."""
+        assert "semantic_search" in SYSTEM_PROMPT
+        assert "get_document" in SYSTEM_PROMPT
+        assert "list_indexed_documents" in SYSTEM_PROMPT

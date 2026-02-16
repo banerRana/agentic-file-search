@@ -58,6 +58,7 @@ class ExplorationTrace:
         step_number: int,
         tool_name: str,
         tool_input: dict[str, Any],
+        resolved_document_path: str | None = None,
     ) -> None:
         """Record a tool call in the exploration path."""
         path_entries: list[str] = []
@@ -72,6 +73,11 @@ class ExplorationTrace:
             path_entries.append(f"file={normalized_file_path}")
             if tool_name in FILE_TOOLS:
                 self.referenced_documents.add(normalized_file_path)
+
+        if resolved_document_path:
+            normalized_doc_path = normalize_path(resolved_document_path, self.root_directory)
+            path_entries.append(f"document={normalized_doc_path}")
+            self.referenced_documents.add(normalized_doc_path)
 
         parameters = ", ".join(path_entries) if path_entries else "no-path-args"
         self.step_path.append(f"{step_number}. tool:{tool_name} ({parameters})")

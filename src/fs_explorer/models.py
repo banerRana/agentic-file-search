@@ -14,7 +14,15 @@ from typing import TypeAlias, Literal, Any
 # =============================================================================
 
 Tools: TypeAlias = Literal[
-    "read", "grep", "glob", "scan_folder", "preview_file", "parse_file"
+    "read",
+    "grep",
+    "glob",
+    "scan_folder",
+    "preview_file",
+    "parse_file",
+    "semantic_search",
+    "get_document",
+    "list_indexed_documents",
 ]
 """Available tool names that the agent can invoke."""
 

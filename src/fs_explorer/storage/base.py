@@ -81,6 +81,18 @@ class StorageBackend(Protocol):
     def count_chunks(self, *, corpus_id: str) -> int:
         """Count chunks for active documents in a corpus."""
 
+    def search_chunks(
+        self,
+        *,
+        corpus_id: str,
+        query: str,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Search indexed chunks and return ranked matches."""
+
+    def get_document(self, *, doc_id: str) -> dict[str, Any] | None:
+        """Get a document by id."""
+
     def save_schema(
         self,
         *,

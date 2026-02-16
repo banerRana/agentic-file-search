@@ -48,6 +48,7 @@ class WorkflowState(BaseModel):
     initial_task: str = ""
     root_directory: str = "."
     current_directory: str = "."
+    use_index: bool = False
 
 
 class InputEvent(StartEvent):
@@ -55,6 +56,7 @@ class InputEvent(StartEvent):
     
     task: str
     folder: str = "."
+    use_index: bool = False
 
 
 class GoDeeperEvent(Event):
@@ -200,14 +202,20 @@ class FsExplorerWorkflow(Workflow):
             state.initial_task = ev.task
             state.root_directory = root_directory
             state.current_directory = root_directory
+            state.use_index = ev.use_index
         
         dirdescription = describe_dir_content(root_directory)
+        index_hint = (
+            "An index is available for this folder. Start with `semantic_search` "
+            "before filesystem-wide scans."
+            if ev.use_index
+            else "Prefer absolute paths from the directory listing when calling tools."
+        )
         agent.configure_task(
             f"Given that the current directory ('{root_directory}') looks like this:\n\n"
             f"```text\n{dirdescription}\n```\n\n"
             f"And that the user is giving you this task: '{ev.task}', "
-            "what action should you take first? "
-            "Prefer absolute paths from the directory listing when calling tools."
+            f"what action should you take first? {index_hint}"
         )
         
         return await _process_agent_action(agent, ctx, update_directory=True)

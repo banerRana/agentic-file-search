@@ -6,6 +6,7 @@ to make decisions about filesystem exploration actions.
 """
 
 import os
+import re
 from pathlib import Path
 from typing import Callable, Any, cast
 from dataclasses import dataclass
@@ -13,11 +14,6 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 from google.genai.types import Content, HttpOptions, Part
 from google.genai import Client as GenAIClient
-
-# Load .env file from project root
-_env_path = Path(__file__).parent.parent.parent / ".env"
-if _env_path.exists():
-    load_dotenv(_env_path)
 
 from .models import Action, ActionType, ToolCallAction, Tools
 from .fs import (
@@ -28,6 +24,14 @@ from .fs import (
     preview_file,
     parse_file,
 )
+from .index_config import resolve_db_path
+from .search import IndexedQueryEngine
+from .storage import DuckDBStorage
+
+# Load .env file from project root
+_env_path = Path(__file__).parent.parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path)
 
 
 # =============================================================================
@@ -111,6 +115,133 @@ class TokenUsage:
 # Tool Registry
 # =============================================================================
 
+
+@dataclass(frozen=True)
+class IndexContext:
+    """Execution context for indexed retrieval tools."""
+
+    root_folder: str
+    db_path: str
+
+
+_INDEX_CONTEXT: IndexContext | None = None
+
+
+def set_index_context(folder: str, db_path: str | None = None) -> None:
+    """Enable indexed tools for a specific folder corpus."""
+    global _INDEX_CONTEXT
+    _INDEX_CONTEXT = IndexContext(
+        root_folder=str(Path(folder).resolve()),
+        db_path=resolve_db_path(db_path),
+    )
+
+
+def clear_index_context() -> None:
+    """Disable indexed tools for the current process."""
+    global _INDEX_CONTEXT
+    _INDEX_CONTEXT = None
+
+
+def _get_index_storage_and_corpus() -> tuple[DuckDBStorage | None, str | None, str | None]:
+    if _INDEX_CONTEXT is None:
+        return None, None, "Index context is not configured. Re-run with `--use-index`."
+
+    storage = DuckDBStorage(_INDEX_CONTEXT.db_path)
+    corpus_id = storage.get_corpus_id(_INDEX_CONTEXT.root_folder)
+    if corpus_id is None:
+        return (
+            None,
+            None,
+            f"No index found for folder {_INDEX_CONTEXT.root_folder}. "
+            "Run `explore index <folder>` first.",
+        )
+    return storage, corpus_id, None
+
+
+def _clean_excerpt(text: str, max_chars: int = 320) -> str:
+    squashed = re.sub(r"\s+", " ", text).strip()
+    if len(squashed) <= max_chars:
+        return squashed
+    return f"{squashed[:max_chars]}..."
+
+
+def semantic_search(query: str, filters: str | None = None, limit: int = 5) -> str:
+    """Search indexed chunks and return ranked excerpts."""
+    storage, corpus_id, error = _get_index_storage_and_corpus()
+    if error:
+        return error
+    assert storage is not None and corpus_id is not None
+
+    engine = IndexedQueryEngine(storage)
+    hits = engine.search(corpus_id=corpus_id, query=query, limit=limit)
+    if not hits:
+        return f"No indexed matches found for query: {query!r}"
+
+    lines = [
+        "=== INDEXED SEARCH RESULTS ===",
+        f"Query: {query}",
+    ]
+    if filters:
+        lines.append(f"Note: metadata filters are not implemented yet; received filters={filters!r}")
+    lines.append("")
+    for idx, hit in enumerate(hits, start=1):
+        lines.extend(
+            [
+                f"[{idx}] doc_id: {hit.doc_id}",
+                f"    path: {hit.absolute_path}",
+                f"    chunk_position: {hit.position}",
+                f"    score: {hit.score}",
+                f"    excerpt: {_clean_excerpt(hit.text)}",
+                "",
+            ]
+        )
+    lines.append(
+        "Use get_document(doc_id=...) to read full content for the most relevant documents."
+    )
+    return "\n".join(lines)
+
+
+def get_document(doc_id: str) -> str:
+    """Return full document content by id from the active index context."""
+    storage, _, error = _get_index_storage_and_corpus()
+    if error:
+        return error
+    assert storage is not None
+
+    document = storage.get_document(doc_id=doc_id)
+    if document is None:
+        return f"No indexed document found for doc_id={doc_id!r}"
+    if document["is_deleted"]:
+        return f"Document {doc_id} is marked as deleted in the index."
+
+    return (
+        f"=== DOCUMENT {doc_id} ===\n"
+        f"Path: {document['absolute_path']}\n\n"
+        f"{document['content']}"
+    )
+
+
+def list_indexed_documents() -> str:
+    """List indexed documents for the active corpus."""
+    storage, corpus_id, error = _get_index_storage_and_corpus()
+    if error:
+        return error
+    assert storage is not None and corpus_id is not None
+
+    documents = storage.list_documents(corpus_id=corpus_id, include_deleted=False)
+    if not documents:
+        return "No indexed documents found for the active corpus."
+
+    lines = ["=== INDEXED DOCUMENTS ==="]
+    for idx, document in enumerate(documents, start=1):
+        lines.append(
+            f"[{idx}] doc_id={document['id']} path={document['absolute_path']}"
+        )
+    lines.append("")
+    lines.append("Use semantic_search(...) to find relevant doc_ids.")
+    return "\n".join(lines)
+
+
 TOOLS: dict[Tools, Callable[..., str]] = {
     "read": read_file,
     "grep": grep_file_content,
@@ -118,6 +249,9 @@ TOOLS: dict[Tools, Callable[..., str]] = {
     "scan_folder": scan_folder,
     "preview_file": preview_file,
     "parse_file": parse_file,
+    "semantic_search": semantic_search,
+    "get_document": get_document,
+    "list_indexed_documents": list_indexed_documents,
 }
 
 
@@ -138,6 +272,16 @@ You are FsExplorer, an AI agent that explores filesystems to answer user questio
 | `read` | Read a plain text file | `file_path` |
 | `grep` | Search for a pattern in a file | `file_path`, `pattern` |
 | `glob` | Find files matching a pattern | `directory`, `pattern` |
+| `semantic_search` | Search indexed chunks and return ranked matches | `query`, `filters`, `limit` |
+| `get_document` | Read full indexed document by document id | `doc_id` |
+| `list_indexed_documents` | List indexed documents for active corpus | none |
+
+## Indexed Retrieval Strategy
+
+When indexed tools are available:
+1. Start with `semantic_search` to quickly find relevant documents.
+2. Use `get_document` for the top candidate doc IDs.
+3. If indexed tools report index is unavailable, fall back to filesystem tools (`scan_folder`, `parse_file`, etc.).
 
 ## Three-Phase Document Exploration Strategy
 

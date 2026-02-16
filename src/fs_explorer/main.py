@@ -21,6 +21,7 @@ from rich.text import Text
 from .index_config import resolve_db_path
 from .indexing import IndexingPipeline, SchemaDiscovery
 from .storage import DuckDBStorage
+from .agent import set_index_context, clear_index_context
 from .workflow import (
     workflow,
     InputEvent,
@@ -46,6 +47,9 @@ TOOL_ICONS = {
     "read": "📄",
     "grep": "🔍",
     "glob": "🔎",
+    "semantic_search": "🧠",
+    "get_document": "📚",
+    "list_indexed_documents": "🗂️",
 }
 
 # Phase detection based on tool usage
@@ -56,6 +60,9 @@ PHASE_DESCRIPTIONS = {
     "read": ("Reading", "Text File", "blue"),
     "grep": ("Searching", "Pattern Match", "yellow"),
     "glob": ("Finding", "File Search", "yellow"),
+    "semantic_search": ("Indexed", "Semantic Retrieval", "magenta"),
+    "get_document": ("Indexed", "Document Fetch", "green"),
+    "list_indexed_documents": ("Indexed", "Corpus Listing", "blue"),
 }
 
 
@@ -212,7 +219,13 @@ def print_workflow_summary(
         ))
 
 
-async def run_workflow(task: str, folder: str = ".") -> None:
+async def run_workflow(
+    task: str,
+    folder: str = ".",
+    *,
+    use_index: bool = False,
+    db_path: str | None = None,
+) -> None:
     """
     Execute the exploration workflow with detailed step-by-step output.
     
@@ -229,106 +242,158 @@ async def run_workflow(task: str, folder: str = ".") -> None:
             border_style="bold red",
         ))
         return
-    
-    # Reset agent for fresh state
-    reset_agent()
-    
-    # Print header
-    print_workflow_header(console, task, resolved_folder)
-    trace = ExplorationTrace(root_directory=resolved_folder)
-    
-    step_number = 0
-    handler = workflow.run(start_event=InputEvent(task=task, folder=resolved_folder))
-    
-    with console.status(status="[bold cyan]🔄 Analyzing task...") as status:
-        async for event in handler.stream_events():
-            if isinstance(event, ToolCallEvent):
-                step_number += 1
-                trace.record_tool_call(
-                    step_number=step_number,
-                    tool_name=event.tool_name,
-                    tool_input=event.tool_input,
-                )
-                
-                # Update status based on tool
-                icon = TOOL_ICONS.get(event.tool_name, "🔧")
-                if event.tool_name == "scan_folder":
-                    status.update(f"[bold cyan]{icon} Scanning documents in parallel...")
-                elif event.tool_name == "parse_file":
-                    status.update(f"[bold green]{icon} Reading document in detail...")
-                elif event.tool_name == "preview_file":
-                    status.update(f"[bold cyan]{icon} Quick preview of document...")
-                else:
-                    status.update(f"[bold yellow]{icon} Executing {event.tool_name}...")
-                
-                # Print the detailed panel
-                panel = format_tool_panel(event, step_number)
-                console.print(panel)
-                console.print()
-                
-                status.update("[bold cyan]🔄 Processing results...")
-                
-            elif isinstance(event, GoDeeperEvent):
-                step_number += 1
-                trace.record_go_deeper(step_number=step_number, directory=event.directory)
-                panel = format_navigation_panel(event, step_number)
-                console.print(panel)
-                console.print()
-                status.update("[bold cyan]🔄 Exploring directory...")
-                
-            elif isinstance(event, AskHumanEvent):
-                status.stop()
-                console.print()
-                
-                # Create a nice prompt panel
-                question_panel = Panel(
-                    Markdown(f"**Question:** {event.question}\n\n**Why I'm asking:** {event.reason}"),
-                    title="❓ Human Input Required",
+
+    resolved_db_path: str | None = None
+    index_storage: DuckDBStorage | None = None
+    if use_index:
+        resolved_db_path = resolve_db_path(db_path)
+        storage = DuckDBStorage(resolved_db_path)
+        corpus_id = storage.get_corpus_id(resolved_folder)
+        if corpus_id is None:
+            console.print(
+                Panel(
+                    Text(
+                        "No index found for this folder. "
+                        "Run `explore index <folder>` first.",
+                        style="bold red",
+                    ),
+                    title="❌ Missing Index",
                     title_align="left",
                     border_style="bold red",
                 )
-                console.print(question_panel)
-                
-                answer = console.input("[bold cyan]Your answer:[/] ")
-                while answer.strip() == "":
-                    console.print("[bold red]Please provide an answer.[/]")
-                    answer = console.input("[bold cyan]Your answer:[/] ")
-                
-                handler.ctx.send_event(HumanAnswerEvent(response=answer.strip()))
-                console.print()
-                status.start()
-                status.update("[bold cyan]🔄 Processing your response...")
+            )
+            return
+        index_storage = storage
+        set_index_context(resolved_folder, resolved_db_path)
+    else:
+        clear_index_context()
+    
+    try:
+        # Reset agent for fresh state
+        reset_agent()
         
-        # Get final result
-        result = await handler
-        status.update("[bold green]✨ Preparing final answer...")
-        await asyncio.sleep(0.1)
-        status.stop()
-    
-    # Print final result with prominent styling
-    console.print()
-    if result.final_result:
-        final_panel = Panel(
-            Markdown(result.final_result),
-            title="✅ Final Answer",
-            title_align="left",
-            border_style="bold green",
-            padding=(1, 2),
+        # Print header
+        print_workflow_header(console, task, resolved_folder)
+        trace = ExplorationTrace(root_directory=resolved_folder)
+        
+        step_number = 0
+        handler = workflow.run(
+            start_event=InputEvent(
+                task=task,
+                folder=resolved_folder,
+                use_index=use_index,
+            )
         )
-        console.print(final_panel)
-    elif result.error:
-        error_panel = Panel(
-            Text(result.error, style="bold red"),
-            title="❌ Error",
-            title_align="left",
-            border_style="bold red",
-        )
-        console.print(error_panel)
-    
-    # Print workflow summary
-    agent = get_agent()
-    cited_sources = extract_cited_sources(result.final_result)
-    print_workflow_summary(console, agent, step_number, trace, cited_sources)
+        
+        with console.status(status="[bold cyan]🔄 Analyzing task...") as status:
+            async for event in handler.stream_events():
+                if isinstance(event, ToolCallEvent):
+                    step_number += 1
+                    resolved_document_path: str | None = None
+                    if event.tool_name == "get_document":
+                        doc_id = event.tool_input.get("doc_id")
+                        if (
+                            index_storage is not None
+                            and isinstance(doc_id, str)
+                            and doc_id
+                        ):
+                            document = index_storage.get_document(doc_id=doc_id)
+                            if document and not document["is_deleted"]:
+                                resolved_document_path = str(document["absolute_path"])
+
+                    trace.record_tool_call(
+                        step_number=step_number,
+                        tool_name=event.tool_name,
+                        tool_input=event.tool_input,
+                        resolved_document_path=resolved_document_path,
+                    )
+
+                    # Update status based on tool
+                    icon = TOOL_ICONS.get(event.tool_name, "🔧")
+                    if event.tool_name == "scan_folder":
+                        status.update(f"[bold cyan]{icon} Scanning documents in parallel...")
+                    elif event.tool_name == "parse_file":
+                        status.update(f"[bold green]{icon} Reading document in detail...")
+                    elif event.tool_name == "preview_file":
+                        status.update(f"[bold cyan]{icon} Quick preview of document...")
+                    elif event.tool_name == "semantic_search":
+                        status.update(f"[bold magenta]{icon} Searching index...")
+                    elif event.tool_name == "get_document":
+                        status.update(f"[bold green]{icon} Reading indexed document...")
+                    elif event.tool_name == "list_indexed_documents":
+                        status.update(f"[bold blue]{icon} Listing indexed documents...")
+                    else:
+                        status.update(f"[bold yellow]{icon} Executing {event.tool_name}...")
+
+                    # Print the detailed panel
+                    panel = format_tool_panel(event, step_number)
+                    console.print(panel)
+                    console.print()
+
+                    status.update("[bold cyan]🔄 Processing results...")
+                elif isinstance(event, GoDeeperEvent):
+                    step_number += 1
+                    trace.record_go_deeper(step_number=step_number, directory=event.directory)
+                    panel = format_navigation_panel(event, step_number)
+                    console.print(panel)
+                    console.print()
+                    status.update("[bold cyan]🔄 Exploring directory...")
+                    
+                elif isinstance(event, AskHumanEvent):
+                    status.stop()
+                    console.print()
+                    
+                    # Create a nice prompt panel
+                    question_panel = Panel(
+                        Markdown(f"**Question:** {event.question}\n\n**Why I'm asking:** {event.reason}"),
+                        title="❓ Human Input Required",
+                        title_align="left",
+                        border_style="bold red",
+                    )
+                    console.print(question_panel)
+                    
+                    answer = console.input("[bold cyan]Your answer:[/] ")
+                    while answer.strip() == "":
+                        console.print("[bold red]Please provide an answer.[/]")
+                        answer = console.input("[bold cyan]Your answer:[/] ")
+                    
+                    handler.ctx.send_event(HumanAnswerEvent(response=answer.strip()))
+                    console.print()
+                    status.start()
+                    status.update("[bold cyan]🔄 Processing your response...")
+            
+            # Get final result
+            result = await handler
+            status.update("[bold green]✨ Preparing final answer...")
+            await asyncio.sleep(0.1)
+            status.stop()
+        
+        # Print final result with prominent styling
+        console.print()
+        if result.final_result:
+            final_panel = Panel(
+                Markdown(result.final_result),
+                title="✅ Final Answer",
+                title_align="left",
+                border_style="bold green",
+                padding=(1, 2),
+            )
+            console.print(final_panel)
+        elif result.error:
+            error_panel = Panel(
+                Text(result.error, style="bold red"),
+                title="❌ Error",
+                title_align="left",
+                border_style="bold red",
+            )
+            console.print(error_panel)
+        
+        # Print workflow summary
+        agent = get_agent()
+        cited_sources = extract_cited_sources(result.final_result)
+        print_workflow_summary(console, agent, step_number, trace, cited_sources)
+    finally:
+        clear_index_context()
 
 
 @app.callback(invoke_without_command=True)
@@ -350,6 +415,17 @@ def main(
             help="Folder to explore. Defaults to the current directory.",
         ),
     ] = ".",
+    use_index: Annotated[
+        bool,
+        Option(
+            "--use-index",
+            help="Use indexed retrieval tools for this run (requires prior indexing).",
+        ),
+    ] = False,
+    db_path: Annotated[
+        str | None,
+        Option("--db-path", help="Path to DuckDB index file."),
+    ] = None,
 ) -> None:
     """
     Explore documents with an agent, build indexes, and manage schema metadata.
@@ -363,7 +439,7 @@ def main(
     if task is None or not task.strip():
         raise BadParameter("`--task` is required unless you run a subcommand.")
 
-    asyncio.run(run_workflow(task, folder))
+    asyncio.run(run_workflow(task, folder, use_index=use_index, db_path=db_path))
 
 
 @app.command("index")
@@ -416,6 +492,33 @@ def index_command(
     summary.add_row("Schema Used:", result.schema_used or "<none>")
 
     console.print(Panel(summary, title="📦 Index Complete", border_style="bold green"))
+
+
+@app.command("query")
+def query_command(
+    task: Annotated[
+        str,
+        Option(
+            "--task",
+            "-t",
+            help="Question to answer using indexed retrieval tools.",
+        ),
+    ],
+    folder: Annotated[
+        str,
+        Option(
+            "--folder",
+            "-f",
+            help="Folder whose index should be queried.",
+        ),
+    ] = ".",
+    db_path: Annotated[
+        str | None,
+        Option("--db-path", help="Path to DuckDB index file."),
+    ] = None,
+) -> None:
+    """Run the agent with indexed retrieval enabled."""
+    asyncio.run(run_workflow(task, folder, use_index=True, db_path=db_path))
 
 
 @schema_app.command("discover")
