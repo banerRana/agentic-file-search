@@ -5,15 +5,10 @@ Provides a WebSocket endpoint for real-time workflow streaming
 and serves the single-page HTML interface.
 """
 
-import json
-import asyncio
-import os
 from pathlib import Path
-from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from .workflow import (
@@ -23,10 +18,10 @@ from .workflow import (
     GoDeeperEvent,
     AskHumanEvent,
     HumanAnswerEvent,
-    ExplorationEndEvent,
     get_agent,
     reset_agent,
 )
+from .exploration_trace import ExplorationTrace, extract_cited_sources
 
 app = FastAPI(title="FsExplorer", description="AI-powered filesystem exploration")
 
@@ -113,10 +108,8 @@ async def websocket_explore(websocket: WebSocket):
                 "data": {"message": f"Invalid folder: {folder}"}
             })
             return
-        
-        # Change to target folder
-        original_cwd = os.getcwd()
-        os.chdir(folder_path)
+
+        trace = ExplorationTrace(root_directory=str(folder_path))
         
         # Reset agent for fresh state
         reset_agent()
@@ -129,11 +122,16 @@ async def websocket_explore(websocket: WebSocket):
         
         # Run the workflow
         step_number = 0
-        handler = workflow.run(start_event=InputEvent(task=task))
+        handler = workflow.run(start_event=InputEvent(task=task, folder=str(folder_path)))
         
         async for event in handler.stream_events():
             if isinstance(event, ToolCallEvent):
                 step_number += 1
+                trace.record_tool_call(
+                    step_number=step_number,
+                    tool_name=event.tool_name,
+                    tool_input=event.tool_input,
+                )
                 await websocket.send_json({
                     "type": "tool_call",
                     "data": {
@@ -146,6 +144,7 @@ async def websocket_explore(websocket: WebSocket):
                 
             elif isinstance(event, GoDeeperEvent):
                 step_number += 1
+                trace.record_go_deeper(step_number=step_number, directory=event.directory)
                 await websocket.send_json({
                     "type": "go_deeper",
                     "data": {
@@ -175,6 +174,7 @@ async def websocket_explore(websocket: WebSocket):
         
         # Get final result
         result = await handler
+        cited_sources = extract_cited_sources(result.final_result)
         
         # Get token usage
         agent = get_agent()
@@ -196,7 +196,12 @@ async def websocket_explore(websocket: WebSocket):
                     "total_tokens": usage.total_tokens,
                     "tool_result_chars": usage.tool_result_chars,
                     "estimated_cost": round(total_cost, 6),
-                }
+                },
+                "trace": {
+                    "step_path": trace.step_path,
+                    "referenced_documents": trace.sorted_documents(),
+                    "cited_sources": cited_sources,
+                },
             }
         })
         
@@ -207,10 +212,6 @@ async def websocket_explore(websocket: WebSocket):
             "type": "error",
             "data": {"message": str(e)}
         })
-    finally:
-        # Restore original working directory
-        if 'original_cwd' in locals():
-            os.chdir(original_cwd)
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000):
@@ -221,4 +222,3 @@ def run_server(host: str = "127.0.0.1", port: int = 8000):
 
 if __name__ == "__main__":
     run_server()
-

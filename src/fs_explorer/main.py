@@ -7,6 +7,7 @@ with rich, detailed output showing each step of the workflow.
 
 import json
 import asyncio
+import os
 from datetime import datetime
 
 from typer import Typer, Option
@@ -27,6 +28,7 @@ from .workflow import (
     get_agent,
     reset_agent,
 )
+from .exploration_trace import ExplorationTrace, extract_cited_sources
 
 app = Typer()
 
@@ -118,7 +120,7 @@ def format_navigation_panel(event: GoDeeperEvent, step_number: int) -> Panel:
     )
 
 
-def print_workflow_header(console: Console, task: str) -> None:
+def print_workflow_header(console: Console, task: str, folder: str) -> None:
     """Print a header showing the task being executed."""
     console.print()
     header = Table.grid(padding=(0, 2))
@@ -127,13 +129,20 @@ def print_workflow_header(console: Console, task: str) -> None:
     
     header.add_row("🤖 FsExplorer Agent", "")
     header.add_row("📋 Task:", task)
+    header.add_row("📁 Folder:", folder)
     header.add_row("🕐 Started:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     
     console.print(Panel(header, border_style="bold blue", title="Starting Exploration", title_align="left"))
     console.print()
 
 
-def print_workflow_summary(console: Console, agent, step_count: int) -> None:
+def print_workflow_summary(
+    console: Console,
+    agent,
+    step_count: int,
+    trace: ExplorationTrace,
+    cited_sources: list[str],
+) -> None:
     """Print a summary of the workflow execution."""
     usage = agent.token_usage
     
@@ -166,8 +175,39 @@ def print_workflow_summary(console: Console, agent, step_count: int) -> None:
         border_style="bold blue",
     ))
 
+    if trace.step_path:
+        path_markdown = "\n".join(f"- `{entry}`" for entry in trace.step_path)
+        console.print()
+        console.print(Panel(
+            Markdown(path_markdown),
+            title="🧭 Exploration Path",
+            title_align="left",
+            border_style="bold cyan",
+        ))
 
-async def run_workflow(task: str) -> None:
+    referenced_documents = trace.sorted_documents()
+    if referenced_documents:
+        docs_markdown = "\n".join(f"- `{doc}`" for doc in referenced_documents)
+        console.print()
+        console.print(Panel(
+            Markdown(docs_markdown),
+            title="📚 Referenced Documents (Tool Calls)",
+            title_align="left",
+            border_style="bold green",
+        ))
+
+    if cited_sources:
+        sources_markdown = "\n".join(f"- `{source}`" for source in cited_sources)
+        console.print()
+        console.print(Panel(
+            Markdown(sources_markdown),
+            title="🔖 Cited Sources (Final Answer)",
+            title_align="left",
+            border_style="bold yellow",
+        ))
+
+
+async def run_workflow(task: str, folder: str = ".") -> None:
     """
     Execute the exploration workflow with detailed step-by-step output.
     
@@ -175,20 +215,35 @@ async def run_workflow(task: str) -> None:
         task: The user's task/question to answer.
     """
     console = Console()
+    resolved_folder = os.path.abspath(folder)
+    if not os.path.exists(resolved_folder) or not os.path.isdir(resolved_folder):
+        console.print(Panel(
+            Text(f"No such directory: {resolved_folder}", style="bold red"),
+            title="❌ Error",
+            title_align="left",
+            border_style="bold red",
+        ))
+        return
     
     # Reset agent for fresh state
     reset_agent()
     
     # Print header
-    print_workflow_header(console, task)
+    print_workflow_header(console, task, resolved_folder)
+    trace = ExplorationTrace(root_directory=resolved_folder)
     
     step_number = 0
-    handler = workflow.run(start_event=InputEvent(task=task))
+    handler = workflow.run(start_event=InputEvent(task=task, folder=resolved_folder))
     
     with console.status(status="[bold cyan]🔄 Analyzing task...") as status:
         async for event in handler.stream_events():
             if isinstance(event, ToolCallEvent):
                 step_number += 1
+                trace.record_tool_call(
+                    step_number=step_number,
+                    tool_name=event.tool_name,
+                    tool_input=event.tool_input,
+                )
                 
                 # Update status based on tool
                 icon = TOOL_ICONS.get(event.tool_name, "🔧")
@@ -210,6 +265,7 @@ async def run_workflow(task: str) -> None:
                 
             elif isinstance(event, GoDeeperEvent):
                 step_number += 1
+                trace.record_go_deeper(step_number=step_number, directory=event.directory)
                 panel = format_navigation_panel(event, step_number)
                 console.print(panel)
                 console.print()
@@ -266,7 +322,8 @@ async def run_workflow(task: str) -> None:
     
     # Print workflow summary
     agent = get_agent()
-    print_workflow_summary(console, agent, step_number)
+    cited_sources = extract_cited_sources(result.final_result)
+    print_workflow_summary(console, agent, step_number, trace, cited_sources)
 
 
 @app.command()
@@ -279,6 +336,14 @@ def main(
             help="Task that the FsExplorer Agent has to perform while exploring the current directory.",
         ),
     ],
+    folder: Annotated[
+        str,
+        Option(
+            "--folder",
+            "-f",
+            help="Folder to explore. Defaults to the current directory.",
+        ),
+    ] = ".",
 ) -> None:
     """
     Explore the filesystem to answer questions about documents.
@@ -286,4 +351,4 @@ def main(
     The agent will scan, analyze, and parse relevant documents to provide
     comprehensive answers with source citations.
     """
-    asyncio.run(run_workflow(task))
+    asyncio.run(run_workflow(task, folder))

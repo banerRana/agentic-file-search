@@ -6,6 +6,8 @@ exploration of the filesystem, handling tool calls, directory navigation,
 and human interaction.
 """
 
+import os
+
 from workflows import Workflow, Context, step
 from workflows.events import (
     StartEvent,
@@ -44,6 +46,7 @@ class WorkflowState(BaseModel):
     """State maintained throughout the workflow execution."""
     
     initial_task: str = ""
+    root_directory: str = "."
     current_directory: str = "."
 
 
@@ -51,6 +54,7 @@ class InputEvent(StartEvent):
     """Initial event containing the user's task."""
     
     task: str
+    folder: str = "."
 
 
 class GoDeeperEvent(Event):
@@ -188,15 +192,22 @@ class FsExplorerWorkflow(Workflow):
         agent: Annotated[FsExplorerAgent, Resource(get_agent)],
     ) -> WorkflowEvent:
         """Initialize exploration with the user's task."""
+        root_directory = os.path.abspath(ev.folder)
+        if not os.path.exists(root_directory) or not os.path.isdir(root_directory):
+            return ExplorationEndEvent(error=f"No such directory: {root_directory}")
+
         async with ctx.store.edit_state() as state:
             state.initial_task = ev.task
+            state.root_directory = root_directory
+            state.current_directory = root_directory
         
-        dirdescription = describe_dir_content(".")
+        dirdescription = describe_dir_content(root_directory)
         agent.configure_task(
-            f"Given that the current directory ('.') looks like this:\n\n"
+            f"Given that the current directory ('{root_directory}') looks like this:\n\n"
             f"```text\n{dirdescription}\n```\n\n"
             f"And that the user is giving you this task: '{ev.task}', "
-            f"what action should you take first?"
+            "what action should you take first? "
+            "Prefer absolute paths from the directory listing when calling tools."
         )
         
         return await _process_agent_action(agent, ctx, update_directory=True)
