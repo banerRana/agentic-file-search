@@ -1,7 +1,9 @@
 """Tests for indexing and schema components."""
 
+import json
 from pathlib import Path
 
+import fs_explorer.indexing.metadata as metadata_module
 import fs_explorer.indexing.pipeline as pipeline_module
 from fs_explorer.indexing.chunker import SmartChunker
 from fs_explorer.indexing.pipeline import IndexingPipeline
@@ -36,6 +38,21 @@ def test_schema_discovery_from_folder(tmp_path: Path) -> None:
     document_type_field = next(field for field in fields if field["name"] == "document_type")
     assert "agreement" in document_type_field["enum"]
     assert "report" in document_type_field["enum"]
+
+
+def test_schema_discovery_with_langextract_fields(tmp_path: Path) -> None:
+    folder = tmp_path / "corpus"
+    folder.mkdir()
+    (folder / "agreement.md").write_text("Purchase price with escrow and earnout.")
+
+    schema = SchemaDiscovery().discover_from_folder(
+        str(folder),
+        with_langextract=True,
+    )
+    field_names = {field["name"] for field in schema["fields"]}
+    assert "lx_enabled" in field_names
+    assert "lx_has_earnout" in field_names
+    assert "lx_money_mentions" in field_names
 
 
 def test_indexing_pipeline_indexes_and_marks_deleted(
@@ -104,3 +121,61 @@ def test_indexing_pipeline_indexes_and_marks_deleted(
     )
     deleted_paths = {doc["relative_path"] for doc in all_docs if doc["is_deleted"]}
     assert "b_schedule.md" in deleted_paths
+
+
+def test_indexing_pipeline_with_langextract_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    corpus = tmp_path / "docs"
+    corpus.mkdir()
+    doc_path = corpus / "agreement.md"
+    doc_path.write_text("Purchase price and escrow details.")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "parse_file",
+        lambda file_path: Path(file_path).read_text(),
+    )
+    monkeypatch.setattr(
+        metadata_module,
+        "_extract_langextract_metadata",
+        lambda **_: {
+            "lx_enabled": True,
+            "lx_extraction_count": 3,
+            "lx_entity_classes": "deal_term,organization",
+            "lx_organizations": "TechCorp Industries",
+            "lx_people": "",
+            "lx_deal_terms": "escrow reserve",
+            "lx_money_mentions": 1,
+            "lx_date_mentions": 0,
+            "lx_has_earnout": False,
+            "lx_has_escrow": True,
+        },
+    )
+
+    storage = DuckDBStorage(str(tmp_path / "index.duckdb"))
+    pipeline = IndexingPipeline(storage=storage)
+    result = pipeline.index_folder(
+        str(corpus),
+        discover_schema=True,
+        with_metadata=True,
+    )
+    assert result.indexed_files == 1
+    assert result.schema_used is not None
+
+    docs = storage.list_documents(corpus_id=result.corpus_id, include_deleted=False)
+    assert len(docs) == 1
+    stored = storage.get_document(doc_id=docs[0]["id"])
+    assert stored is not None
+    metadata = json.loads(stored["metadata_json"])
+    assert metadata["lx_enabled"] is True
+    assert metadata["lx_has_escrow"] is True
+
+    hits = storage.search_documents_by_metadata(
+        corpus_id=result.corpus_id,
+        filters=[{"field": "lx_has_escrow", "operator": "eq", "value": True}],
+        limit=5,
+    )
+    assert hits
+    assert hits[0]["relative_path"] == "agreement.md"

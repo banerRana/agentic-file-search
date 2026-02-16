@@ -95,3 +95,52 @@ def test_index_and_schema_commands(tmp_path: Path, monkeypatch) -> None:
     )
     assert show_result.exit_code == 0
     assert "auto_corpus" in show_result.stdout
+
+
+def test_index_command_with_metadata_forces_schema_discovery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    called: dict[str, object] = {}
+
+    class FakePipeline:
+        def __init__(self, storage) -> None:  # noqa: ANN001
+            called["storage_type"] = type(storage).__name__
+
+        def index_folder(
+            self,
+            folder: str,
+            *,
+            discover_schema: bool = False,
+            schema_name: str | None = None,
+            with_metadata: bool = False,
+        ):
+            called["folder"] = folder
+            called["discover_schema"] = discover_schema
+            called["schema_name"] = schema_name
+            called["with_metadata"] = with_metadata
+            return pipeline_module.IndexingResult(
+                corpus_id="corpus_123",
+                indexed_files=1,
+                skipped_files=0,
+                deleted_files=0,
+                chunks_written=1,
+                active_documents=1,
+                schema_used="auto_corpus",
+            )
+
+    monkeypatch.setattr(main_module, "IndexingPipeline", FakePipeline)
+
+    db_path = tmp_path / "index.duckdb"
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main_module.app,
+        ["index", str(corpus), "--db-path", str(db_path), "--with-metadata"],
+    )
+
+    assert result.exit_code == 0
+    assert called["with_metadata"] is True
+    assert called["discover_schema"] is True

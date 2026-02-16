@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from .chunker import SmartChunker
-from .metadata import extract_metadata
+from .metadata import (
+    ensure_langextract_schema_fields,
+    extract_metadata,
+    langextract_field_names,
+)
 from .schema import SchemaDiscovery
 from ..fs import SUPPORTED_EXTENSIONS, parse_file
 from ..storage import ChunkRecord, DocumentRecord, DuckDBStorage, StorageBackend
@@ -54,6 +58,7 @@ class IndexingPipeline:
         *,
         discover_schema: bool = False,
         schema_name: str | None = None,
+        with_metadata: bool = False,
     ) -> IndexingResult:
         root = str(Path(folder).resolve())
         if not os.path.exists(root) or not os.path.isdir(root):
@@ -65,6 +70,7 @@ class IndexingPipeline:
             root=root,
             discover_schema=discover_schema,
             schema_name=schema_name,
+            with_metadata=with_metadata,
         )
 
         indexed_files = 0
@@ -87,6 +93,7 @@ class IndexingPipeline:
                 root_path=root,
                 content=content,
                 schema_def=schema_def,
+                with_langextract=with_metadata,
             )
             metadata_json = json.dumps(metadata, sort_keys=True)
 
@@ -151,9 +158,13 @@ class IndexingPipeline:
         root: str,
         discover_schema: bool,
         schema_name: str | None,
+        with_metadata: bool,
     ) -> tuple[dict[str, Any] | None, str | None]:
         if discover_schema:
-            schema_def = SchemaDiscovery().discover_from_folder(root)
+            schema_def = SchemaDiscovery().discover_from_folder(
+                root,
+                with_langextract=with_metadata,
+            )
             discovered_name = str(schema_def.get("name", f"auto_{Path(root).name}"))
             self.storage.save_schema(
                 corpus_id=corpus_id,
@@ -167,12 +178,71 @@ class IndexingPipeline:
             schema = self.storage.get_schema_by_name(corpus_id=corpus_id, name=schema_name)
             if schema is None:
                 raise ValueError(f"Schema '{schema_name}' not found for corpus {root}")
+            if with_metadata:
+                return self._augment_schema_for_langextract(
+                    corpus_id=corpus_id,
+                    schema_name=schema.name,
+                    schema_def=schema.schema_def,
+                )
             return schema.schema_def, schema.name
 
         active = self.storage.get_active_schema(corpus_id=corpus_id)
         if active is None:
+            if with_metadata:
+                schema_def = SchemaDiscovery().discover_from_folder(
+                    root,
+                    with_langextract=True,
+                )
+                discovered_name = str(schema_def.get("name", f"auto_{Path(root).name}"))
+                self.storage.save_schema(
+                    corpus_id=corpus_id,
+                    name=discovered_name,
+                    schema_def=schema_def,
+                    is_active=True,
+                )
+                return schema_def, discovered_name
             return None, None
+        if with_metadata:
+            return self._augment_schema_for_langextract(
+                corpus_id=corpus_id,
+                schema_name=active.name,
+                schema_def=active.schema_def,
+            )
         return active.schema_def, active.name
+
+    def _augment_schema_for_langextract(
+        self,
+        *,
+        corpus_id: str,
+        schema_name: str,
+        schema_def: dict[str, Any],
+    ) -> tuple[dict[str, Any], str]:
+        existing_field_names = self._schema_field_names(schema_def)
+        required = langextract_field_names()
+        if required.issubset(existing_field_names):
+            return schema_def, schema_name
+
+        augmented_schema, _ = ensure_langextract_schema_fields(schema_def)
+        self.storage.save_schema(
+            corpus_id=corpus_id,
+            name=schema_name,
+            schema_def=augmented_schema,
+            is_active=True,
+        )
+        return augmented_schema, schema_name
+
+    @staticmethod
+    def _schema_field_names(schema_def: dict[str, Any]) -> set[str]:
+        fields = schema_def.get("fields")
+        if not isinstance(fields, list):
+            return set()
+        names: set[str] = set()
+        for field in fields:
+            if isinstance(field, dict):
+                name = field.get("name")
+                if isinstance(name, str):
+                    names.add(name)
+        return names
 
     @staticmethod
     def _iter_supported_files(root: str) -> list[str]:

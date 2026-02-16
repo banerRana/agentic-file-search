@@ -463,6 +463,16 @@ def index_command(
         str | None,
         Option("--schema-name", help="Use an existing stored schema by name."),
     ] = None,
+    with_metadata: Annotated[
+        bool,
+        Option(
+            "--with-metadata",
+            help=(
+                "Enable langextract metadata extraction (requires API key). "
+                "Also enables schema discovery if not explicitly requested."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Build or refresh an index for a folder."""
     console = Console()
@@ -471,10 +481,12 @@ def index_command(
     pipeline = IndexingPipeline(storage=storage)
 
     try:
+        effective_discover_schema = discover_schema or with_metadata
         result = pipeline.index_folder(
             folder,
-            discover_schema=discover_schema,
+            discover_schema=effective_discover_schema,
             schema_name=schema_name,
+            with_metadata=with_metadata,
         )
     except ValueError as exc:
         raise BadParameter(str(exc)) from exc
@@ -490,6 +502,7 @@ def index_command(
     summary.add_row("Chunks Written:", str(result.chunks_written))
     summary.add_row("Active Documents:", str(result.active_documents))
     summary.add_row("Schema Used:", result.schema_used or "<none>")
+    summary.add_row("Metadata Mode:", "langextract" if with_metadata else "heuristic")
 
     console.print(Panel(summary, title="📦 Index Complete", border_style="bold green"))
 
@@ -542,6 +555,13 @@ def schema_discover_command(
             help="Set schema as active for the corpus.",
         ),
     ] = True,
+    with_metadata: Annotated[
+        bool,
+        Option(
+            "--with-metadata",
+            help="Include langextract metadata fields in discovered schema.",
+        ),
+    ] = False,
 ) -> None:
     """Auto-discover and store a metadata schema for a folder."""
     console = Console()
@@ -554,7 +574,10 @@ def schema_discover_command(
     corpus_id = storage.get_or_create_corpus(resolved_folder)
 
     discovery = SchemaDiscovery()
-    discovered = discovery.discover_from_folder(resolved_folder)
+    discovered = discovery.discover_from_folder(
+        resolved_folder,
+        with_langextract=with_metadata,
+    )
     schema_name = name or str(discovered.get("name", f"auto_{os.path.basename(resolved_folder)}"))
     discovered["name"] = schema_name
     schema_id = storage.save_schema(

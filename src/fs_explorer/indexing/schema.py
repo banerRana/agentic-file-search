@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .metadata import infer_document_type
+from .metadata import infer_document_type, langextract_schema_fields
 from ..fs import SUPPORTED_EXTENSIONS
 
 
@@ -27,7 +27,12 @@ def _iter_supported_files(folder: str) -> list[str]:
 class SchemaDiscovery:
     """Auto-discover a lightweight metadata schema from a corpus."""
 
-    def discover_from_folder(self, folder: str) -> dict[str, Any]:
+    def discover_from_folder(
+        self,
+        folder: str,
+        *,
+        with_langextract: bool = False,
+    ) -> dict[str, Any]:
         files = _iter_supported_files(folder)
         document_types = sorted({infer_document_type(path) for path in files})
         corpus_name = Path(folder).resolve().name or "corpus"
@@ -83,6 +88,8 @@ class SchemaDiscovery:
                 "description": "Whether text appears to contain date patterns.",
             },
         ]
+        if with_langextract:
+            fields.extend(langextract_schema_fields())
 
         return {
             "name": f"auto_{corpus_name}",
