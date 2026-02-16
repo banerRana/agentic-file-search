@@ -37,11 +37,23 @@ def _query_terms(query: str, max_terms: int = 8) -> list[str]:
 class DuckDBStorage:
     """DuckDB-backed persistence for corpora, documents, chunks, and schemas."""
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        read_only: bool = False,
+        initialize: bool = True,
+    ) -> None:
         self.db_path = str(Path(db_path).expanduser().resolve())
+        self.read_only = read_only
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = duckdb.connect(self.db_path)
-        self.initialize()
+        self._conn = duckdb.connect(self.db_path, read_only=read_only)
+        if initialize and not read_only:
+            self.initialize()
+
+    def close(self) -> None:
+        """Close the underlying DuckDB connection."""
+        self._conn.close()
 
     def initialize(self) -> None:
         self._conn.execute(
@@ -316,6 +328,57 @@ class DuckDBStorage:
             )
         return results
 
+    def search_documents_by_metadata(
+        self,
+        *,
+        corpus_id: str,
+        filters: list[dict[str, Any]],
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        if not filters:
+            return []
+
+        sql = """
+            SELECT
+                d.id,
+                d.relative_path,
+                d.absolute_path,
+                substring(d.content, 1, 320) AS preview_text
+            FROM documents d
+            WHERE d.corpus_id = ?
+              AND d.is_deleted = FALSE
+        """
+        params: list[Any] = [corpus_id]
+
+        for flt in filters:
+            field = str(flt["field"])
+            operator = str(flt["operator"])
+            value = flt["value"]
+            clause, clause_params = self._metadata_clause(
+                field=field,
+                operator=operator,
+                value=value,
+            )
+            sql += f"\n  AND {clause}"
+            params.extend(clause_params)
+
+        sql += "\nORDER BY d.relative_path ASC\nLIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        metadata_score = len(filters)
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            results.append(
+                {
+                    "doc_id": str(row[0]),
+                    "relative_path": str(row[1]),
+                    "absolute_path": str(row[2]),
+                    "preview_text": str(row[3]),
+                    "metadata_score": metadata_score,
+                }
+            )
+        return results
+
     def get_document(self, *, doc_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
             """
@@ -431,3 +494,82 @@ class DuckDBStorage:
             is_active=bool(row[4]),
             created_at=str(row[5]),
         )
+
+    @staticmethod
+    def _metadata_clause(
+        *,
+        field: str,
+        operator: str,
+        value: Any,
+    ) -> tuple[str, list[Any]]:
+        json_expr = "json_extract_string(d.metadata_json, ?)"
+        json_path = f"$.{field}"
+
+        if operator in {"eq", "ne"}:
+            comparator = "=" if operator == "eq" else "<>"
+            if isinstance(value, bool):
+                return (
+                    f"lower(coalesce({json_expr}, '')) {comparator} ?",
+                    [json_path, "true" if value else "false"],
+                )
+            if isinstance(value, (int, float)):
+                return (
+                    f"try_cast({json_expr} AS DOUBLE) {comparator} ?",
+                    [json_path, float(value)],
+                )
+            return (
+                f"lower(coalesce({json_expr}, '')) {comparator} lower(?)",
+                [json_path, str(value)],
+            )
+
+        if operator in {"gt", "gte", "lt", "lte"}:
+            if not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"Metadata operator {operator!r} requires numeric value for field {field!r}."
+                )
+            comparator_map = {
+                "gt": ">",
+                "gte": ">=",
+                "lt": "<",
+                "lte": "<=",
+            }
+            comparator = comparator_map[operator]
+            return (
+                f"try_cast({json_expr} AS DOUBLE) {comparator} ?",
+                [json_path, float(value)],
+            )
+
+        if operator == "contains":
+            return (
+                f"lower(coalesce({json_expr}, '')) LIKE '%' || lower(?) || '%'",
+                [json_path, str(value)],
+            )
+
+        if operator == "in":
+            if not isinstance(value, list) or not value:
+                raise ValueError(f"Metadata `in` filter for field {field!r} has no values.")
+
+            if all(isinstance(item, bool) for item in value):
+                placeholders = ", ".join(["?"] * len(value))
+                return (
+                    f"lower(coalesce({json_expr}, '')) IN ({placeholders})",
+                    [
+                        json_path,
+                        *["true" if bool(item) else "false" for item in value],
+                    ],
+                )
+
+            if all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value):
+                placeholders = ", ".join(["?"] * len(value))
+                return (
+                    f"try_cast({json_expr} AS DOUBLE) IN ({placeholders})",
+                    [json_path, *[float(item) for item in value]],
+                )
+
+            placeholders = ", ".join(["?"] * len(value))
+            return (
+                f"lower(coalesce({json_expr}, '')) IN ({placeholders})",
+                [json_path, *[str(item).lower() for item in value]],
+            )
+
+        raise ValueError(f"Unsupported metadata operator: {operator!r}")

@@ -90,6 +90,15 @@ class StorageBackend(Protocol):
     ) -> list[dict[str, Any]]:
         """Search indexed chunks and return ranked matches."""
 
+    def search_documents_by_metadata(
+        self,
+        *,
+        corpus_id: str,
+        filters: list[dict[str, Any]],
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search indexed documents by metadata filters."""
+
     def get_document(self, *, doc_id: str) -> dict[str, Any] | None:
         """Get a document by id."""
 

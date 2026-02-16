@@ -77,6 +77,21 @@ def test_indexing_pipeline_indexes_and_marks_deleted(
     assert top_doc is not None
     assert "Purchase price" in top_doc["content"]
 
+    metadata_hits = storage.search_documents_by_metadata(
+        corpus_id=first_result.corpus_id,
+        filters=[
+            {
+                "field": "document_type",
+                "operator": "eq",
+                "value": "agreement",
+            }
+        ],
+        limit=5,
+    )
+    assert metadata_hits
+    assert any(hit["relative_path"] == "a_agreement.md" for hit in metadata_hits)
+    assert all(hit["relative_path"] != "b_schedule.md" for hit in metadata_hits)
+
     second.unlink()
 
     second_result = pipeline.index_folder(str(corpus))

@@ -25,7 +25,7 @@ from .fs import (
     parse_file,
 )
 from .index_config import resolve_db_path
-from .search import IndexedQueryEngine
+from .search import IndexedQueryEngine, MetadataFilterParseError, supported_filter_syntax
 from .storage import DuckDBStorage
 
 # Load .env file from project root
@@ -173,8 +173,26 @@ def semantic_search(query: str, filters: str | None = None, limit: int = 5) -> s
     assert storage is not None and corpus_id is not None
 
     engine = IndexedQueryEngine(storage)
-    hits = engine.search(corpus_id=corpus_id, query=query, limit=limit)
+    try:
+        hits = engine.search(
+            corpus_id=corpus_id,
+            query=query,
+            filters=filters,
+            limit=limit,
+        )
+    except MetadataFilterParseError as exc:
+        return (
+            f"Invalid metadata filter: {exc}\n"
+            f"{supported_filter_syntax()}"
+        )
+    except ValueError as exc:
+        return f"Metadata filter error: {exc}"
+
     if not hits:
+        if filters:
+            return (
+                f"No indexed matches found for query={query!r} with filters={filters!r}."
+            )
         return f"No indexed matches found for query: {query!r}"
 
     lines = [
@@ -182,15 +200,19 @@ def semantic_search(query: str, filters: str | None = None, limit: int = 5) -> s
         f"Query: {query}",
     ]
     if filters:
-        lines.append(f"Note: metadata filters are not implemented yet; received filters={filters!r}")
+        lines.append(f"Filters: {filters}")
     lines.append("")
     for idx, hit in enumerate(hits, start=1):
+        position = hit.position if hit.position is not None else "<metadata>"
         lines.extend(
             [
                 f"[{idx}] doc_id: {hit.doc_id}",
                 f"    path: {hit.absolute_path}",
-                f"    chunk_position: {hit.position}",
-                f"    score: {hit.score}",
+                f"    match: {hit.matched_by}",
+                f"    chunk_position: {position}",
+                f"    semantic_score: {hit.semantic_score}",
+                f"    metadata_score: {hit.metadata_score}",
+                f"    score: {hit.score:.2f}",
                 f"    excerpt: {_clean_excerpt(hit.text)}",
                 "",
             ]
@@ -272,7 +294,7 @@ You are FsExplorer, an AI agent that explores filesystems to answer user questio
 | `read` | Read a plain text file | `file_path` |
 | `grep` | Search for a pattern in a file | `file_path`, `pattern` |
 | `glob` | Find files matching a pattern | `directory`, `pattern` |
-| `semantic_search` | Search indexed chunks and return ranked matches | `query`, `filters`, `limit` |
+| `semantic_search` | Search indexed chunks and metadata-filtered docs, then union/rank results | `query`, `filters`, `limit` |
 | `get_document` | Read full indexed document by document id | `doc_id` |
 | `list_indexed_documents` | List indexed documents for active corpus | none |
 
@@ -282,6 +304,14 @@ When indexed tools are available:
 1. Start with `semantic_search` to quickly find relevant documents.
 2. Use `get_document` for the top candidate doc IDs.
 3. If indexed tools report index is unavailable, fall back to filesystem tools (`scan_folder`, `parse_file`, etc.).
+
+Filter syntax for `semantic_search(filters=...)`:
+- `field=value`
+- `field!=value`
+- `field>=number`, `field<=number`, `field>number`, `field<number`
+- `field in (a, b, c)`
+- `field~substring`
+- combine conditions with comma or `and`
 
 ## Three-Phase Document Exploration Strategy
 
