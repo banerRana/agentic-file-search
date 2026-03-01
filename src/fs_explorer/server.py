@@ -13,24 +13,24 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from .agent import set_index_context, clear_index_context, set_search_flags
+from .agent import clear_index_context, set_index_context, set_search_flags
 from .embeddings import EmbeddingProvider
+from .exploration_trace import ExplorationTrace, extract_cited_sources
 from .index_config import resolve_db_path
 from .indexing import IndexingPipeline
 from .indexing.metadata import auto_discover_profile
 from .search import IndexedQueryEngine
 from .storage import DuckDBStorage
 from .workflow import (
-    workflow,
+    AskHumanEvent,
+    GoDeeperEvent,
+    HumanAnswerEvent,
     InputEvent,
     ToolCallEvent,
-    GoDeeperEvent,
-    AskHumanEvent,
-    HumanAnswerEvent,
     get_agent,
     reset_agent,
+    workflow,
 )
-from .exploration_trace import ExplorationTrace, extract_cited_sources
 
 app = FastAPI(title="FsExplorer", description="AI-powered filesystem exploration")
 
@@ -87,7 +87,9 @@ async def get_ui():
     """Serve the main UI HTML file."""
     html_path = Path(__file__).parent / "ui.html"
     if html_path.exists():
-        return HTMLResponse(content=html_path.read_text(), status_code=200)
+        return HTMLResponse(
+            content=html_path.read_text(encoding="utf-8"), status_code=200
+        )
     return HTMLResponse(content="<h1>UI not found</h1>", status_code=404)
 
 
@@ -160,7 +162,9 @@ async def index_status(folder: str, db_path: str | None = None):
             schema_fields: list[str] = []
             if active_schema is not None:
                 schema_name = active_schema.name
-                has_metadata = active_schema.schema_def.get("metadata_profile") is not None
+                has_metadata = (
+                    active_schema.schema_def.get("metadata_profile") is not None
+                )
                 fields_def = active_schema.schema_def.get("fields")
                 if isinstance(fields_def, list):
                     for f in fields_def:
